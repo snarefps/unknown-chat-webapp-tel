@@ -181,6 +181,7 @@ def handle_callback(call):
         user_id = call.from_user.id
         
         if call.data == "accept_connection":
+            bot.answer_callback_query(call.id, "✅ درخواست پذیرفته شد")
             requester_id = None
             for req_id, owner_id in pending_connections.items():
                 if owner_id == user_id:
@@ -218,6 +219,7 @@ def handle_callback(call):
                 bot.pin_chat_message(user_id, owner_disconnect_message.message_id)
                 
         elif call.data == "reject_connection":
+            bot.answer_callback_query(call.id, "❌ درخواست رد شد")
             requester_id = None
             for req_id, owner_id in pending_connections.items():
                 if owner_id == user_id:
@@ -234,6 +236,7 @@ def handle_callback(call):
                 )
                 
         elif call.data == "disconnect":
+            bot.answer_callback_query(call.id, "❌ چت قطع شد")
             if user_id in active_connections:
                 other_user = active_connections[user_id].get('connected_to')
                 if other_user:
