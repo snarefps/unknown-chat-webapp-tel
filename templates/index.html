@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="fa" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>پروفایل کاربر</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@telegram-mini-apps/twa-ui/dist/twa-ui.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="profile-container">
+            <div class="profile-header">
+                <div class="header-content">
+                </div>
+            </div>
+            
+            <div class="profile-card">
+                <div class="profile-avatar">
+                    <div class="avatar-container">
+                        <img src="{{ profile_photo_url }}" alt="آواتار کاربر" class="twa-avatar">
+                    </div>
+                    <p class="subtitle">خوش آمدید <span class="floating-emoji">👋</span></p>
+                    <h2 class="username">{{ users[0][1] }}</h2>
+                </div>
+
+                <div class="profile-details">
+                    <div class="info-section">
+                        <div class="info-item copyable" onclick="copyToClipboard(this, '{{ users[0][0] }}')">
+                            <div class="info-icon"><span class="floating-emoji">🆔</span></div>
+                            <div class="info-content">
+                                <span class="label">شناسه</span>
+                                <span class="value">{{ users[0][0] }}</span>
+                            </div>
+                        </div>
+
+                        <div class="info-item copyable" onclick="copyToClipboard(this, '{{ users[0][2] }}')">
+                            <div class="info-icon"><span class="floating-emoji">👤</span></div>
+                            <div class="info-content">
+                                <span class="label">شناسه تلگرام</span>
+                                <span class="value">{{ users[0][2] }}</span>
+                            </div>
+                        </div>
+
+                        <div class="info-item copyable" onclick="copyToClipboard(this, 'https://t.me/projectwebappbahonar_bot?start={{ users[0][3] }}')">
+                            <div class="info-icon"><span class="floating-emoji">🔗</span></div>
+                            <div class="info-content">
+                                <span class="label">لینک شما در بات</span>
+                                <span class="value link-value">{{ users[0][3] }}</span>
+                            </div>
+                        </div>
+
+                        <div class="info-item">
+                            <div class="info-icon"><span class="floating-emoji">📅</span></div>
+                            <div class="info-content">
+                                <span class="label">تاریخ ایجاد</span>
+                                <span class="value">{{ users[0][4] }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const webapp = window.Telegram.WebApp;
+        webapp.ready();
+        document.documentElement.setAttribute('data-theme', webapp.colorScheme);
+        webapp.onEvent('themeChanged', () => {
+            document.documentElement.setAttribute('data-theme', webapp.colorScheme);
+        });
+
+        function copyToClipboard(element, text) {
+            navigator.clipboard.writeText(text).then(() => {
+                element.classList.add('copied');
+                setTimeout(() => {
+                    element.classList.remove('copied');
+                }, 1000);
+            });
+        }
+    </script>
+</body>
+</html>
