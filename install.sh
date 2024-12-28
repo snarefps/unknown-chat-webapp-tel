@@ -34,16 +34,26 @@ log "Starting installation..."
 read -p "Enter your domain (e.g., example.com): " DOMAIN
 read -p "Enter your Telegram Bot Token: " BOT_TOKEN
 read -p "Enter your Telegram Bot Username: " BOT_USERNAME
+read -p "Enter GitHub repository URL: " REPO_URL
 
 # بررسی متغیرها
 [ -z "$DOMAIN" ] && error "Domain cannot be empty"
 [ -z "$BOT_TOKEN" ] && error "Bot token cannot be empty"
 [ -z "$BOT_USERNAME" ] && error "Bot username cannot be empty"
+[ -z "$REPO_URL" ] && error "Repository URL cannot be empty"
 
 # نصب پکیج‌های مورد نیاز
 log "Installing system packages..."
 sudo apt update || error "Failed to update package list"
-sudo apt install -y python3-pip python3-venv nginx certbot python3-certbot-nginx || error "Failed to install packages"
+sudo apt install -y python3-pip python3-venv nginx certbot python3-certbot-nginx git || error "Failed to install packages"
+
+# کلون کردن مخزن
+log "Cloning repository..."
+APP_DIR="/opt/telegram-webapp"
+sudo mkdir -p $APP_DIR
+sudo chown $USER:$USER $APP_DIR
+git clone $REPO_URL $APP_DIR || error "Failed to clone repository"
+cd $APP_DIR || error "Failed to change directory"
 
 # ایجاد محیط مجازی و نصب پکیج‌ها
 log "Setting up Python virtual environment..."
@@ -67,7 +77,7 @@ server {
     }
 
     location /static {
-        alias $(pwd)/static;
+        alias $APP_DIR/static;
     }
 
     client_max_body_size 16M;
@@ -94,12 +104,12 @@ After=network.target
 
 [Service]
 User=$USER
-WorkingDirectory=$(pwd)
-Environment="PATH=$(pwd)/venv/bin"
+WorkingDirectory=$APP_DIR
+Environment="PATH=$APP_DIR/venv/bin"
 Environment="BOT_TOKEN=$BOT_TOKEN"
 Environment="BOT_USERNAME=$BOT_USERNAME"
 Environment="DOMAIN=https://$DOMAIN"
-ExecStart=$(pwd)/venv/bin/gunicorn -w 4 -b 127.0.0.1:5000 app:app
+ExecStart=$APP_DIR/venv/bin/gunicorn -w 4 -b 127.0.0.1:5000 app:app
 Restart=always
 
 [Install]
@@ -122,8 +132,10 @@ fi
 
 log "Installation completed successfully!"
 echo -e "${GREEN}Your web app is now running at https://$DOMAIN${NC}"
+echo -e "${GREEN}Application is installed in: $APP_DIR${NC}"
 echo -e "${BLUE}To check the status of your app, run: sudo systemctl status telegram-webapp${NC}"
 echo -e "${BLUE}To view logs, run: sudo journalctl -u telegram-webapp${NC}"
+echo -e "${BLUE}To update from git, run: cd $APP_DIR && git pull${NC}"
 
 # بررسی وضعیت نهایی سرویس
 log "Checking final service status..."
