@@ -1,32 +1,60 @@
 #!/bin/bash
 
+# تنظیم خطایابی
+set -e
+set -o pipefail
+
 # رنگ‌ها برای نمایش بهتر پیام‌ها
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
+RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${BLUE}Starting installation...${NC}"
+# تابع لاگ کردن
+log() {
+    echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
+}
+
+# تابع خطا
+error() {
+    echo -e "${RED}[ERROR] $1${NC}"
+    exit 1
+}
+
+# تابع بررسی نتیجه دستورات
+check_result() {
+    if [ $? -ne 0 ]; then
+        error "$1"
+    fi
+}
+
+log "Starting installation..."
 
 # دریافت متغیرهای محیطی
 read -p "Enter your domain (e.g., example.com): " DOMAIN
 read -p "Enter your Telegram Bot Token: " BOT_TOKEN
 read -p "Enter your Telegram Bot Username: " BOT_USERNAME
 
+# بررسی متغیرها
+[ -z "$DOMAIN" ] && error "Domain cannot be empty"
+[ -z "$BOT_TOKEN" ] && error "Bot token cannot be empty"
+[ -z "$BOT_USERNAME" ] && error "Bot username cannot be empty"
+
 # نصب پکیج‌های مورد نیاز
-echo -e "${BLUE}Installing system packages...${NC}"
-sudo apt update
-sudo apt install -y python3-pip python3-venv nginx certbot python3-certbot-nginx
+log "Installing system packages..."
+sudo apt update || error "Failed to update package list"
+sudo apt install -y python3-pip python3-venv nginx certbot python3-certbot-nginx || error "Failed to install packages"
 
 # ایجاد محیط مجازی و نصب پکیج‌ها
-echo -e "${BLUE}Setting up Python virtual environment...${NC}"
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-pip install gunicorn
+log "Setting up Python virtual environment..."
+python3 -m venv venv || error "Failed to create virtual environment"
+source venv/bin/activate || error "Failed to activate virtual environment"
+pip install -r requirements.txt || error "Failed to install Python packages"
+pip install gunicorn || error "Failed to install gunicorn"
 
 # ایجاد فایل کانفیگ nginx
-echo -e "${BLUE}Creating Nginx configuration...${NC}"
-sudo bash -c "cat > /etc/nginx/sites-available/$DOMAIN" << EOL
+log "Creating Nginx configuration..."
+sudo tee /etc/nginx/sites-available/$DOMAIN > /dev/null << EOL
 server {
     server_name $DOMAIN;
 
@@ -45,18 +73,21 @@ server {
     client_max_body_size 16M;
 }
 EOL
+check_result "Failed to create Nginx config"
 
 # فعال‌سازی سایت در nginx
-sudo ln -sf /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl restart nginx
+log "Enabling Nginx site..."
+sudo ln -sf /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/ || error "Failed to enable Nginx site"
+sudo nginx -t || error "Nginx configuration test failed"
+sudo systemctl restart nginx || error "Failed to restart Nginx"
 
 # نصب SSL با Let's Encrypt
-echo -e "${BLUE}Setting up SSL certificate...${NC}"
-sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos --email admin@$DOMAIN
+log "Setting up SSL certificate..."
+sudo certbot --nginx -d $DOMAIN --non-interactive --agree-tos --email admin@$DOMAIN || error "SSL certificate installation failed"
 
 # ایجاد سرویس systemd
-echo -e "${BLUE}Creating systemd service...${NC}"
-sudo bash -c "cat > /etc/systemd/system/telegram-webapp.service" << EOL
+log "Creating systemd service..."
+sudo tee /etc/systemd/system/telegram-webapp.service > /dev/null << EOL
 [Unit]
 Description=Telegram Web App
 After=network.target
@@ -74,17 +105,26 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 EOL
+check_result "Failed to create systemd service"
 
 # راه‌اندازی و فعال‌سازی سرویس
-sudo systemctl daemon-reload
-sudo systemctl start telegram-webapp
-sudo systemctl enable telegram-webapp
+log "Starting and enabling service..."
+sudo systemctl daemon-reload || error "Failed to reload systemd"
+sudo systemctl start telegram-webapp || error "Failed to start service"
+sudo systemctl enable telegram-webapp || error "Failed to enable service"
 
-# تنظیم webhook تلگرام
-echo -e "${BLUE}Setting up Telegram webhook...${NC}"
-curl "https://api.telegram.org/bot$BOT_TOKEN/setWebhook?url=https://$DOMAIN/webhook"
+# تنظیم webhook تلگرام با خطایابی
+log "Setting up Telegram webhook..."
+WEBHOOK_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" "https://api.telegram.org/bot$BOT_TOKEN/setWebhook?url=https://$DOMAIN/webhook")
+if [ "$WEBHOOK_RESPONSE" != "200" ]; then
+    error "Failed to set webhook. HTTP response code: $WEBHOOK_RESPONSE"
+fi
 
-echo -e "${GREEN}Installation completed!${NC}"
+log "Installation completed successfully!"
 echo -e "${GREEN}Your web app is now running at https://$DOMAIN${NC}"
 echo -e "${BLUE}To check the status of your app, run: sudo systemctl status telegram-webapp${NC}"
 echo -e "${BLUE}To view logs, run: sudo journalctl -u telegram-webapp${NC}"
+
+# بررسی وضعیت نهایی سرویس
+log "Checking final service status..."
+sudo systemctl status telegram-webapp --no-pager
