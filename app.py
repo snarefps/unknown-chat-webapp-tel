@@ -242,6 +242,67 @@ t.me/{bot.get_me().username}?start={special_link}
     finally:
         conn.close()
 
+@bot.message_handler(func=lambda message: message.text and message.text.startswith('/start '))
+def handle_deep_linking(message):
+    logger = logging.getLogger(__name__)
+    logger.info(f"Deep linking handler called for user {message.from_user.id}")
+    
+    try:
+        # دریافت شناسه کاربر هدف از پارامتر
+        target_id = message.text.split()[1]
+        requester_id = message.from_user.id
+        
+        logger.info(f"Processing deep link: requester={requester_id}, target={target_id}")
+        
+        # تبدیل به عدد
+        target_id = int(target_id)
+        
+        if target_id == requester_id:
+            bot.reply_to(message, "❌ شما نمی‌توانید با خودتان چت کنید!")
+            return
+            
+        if connections.is_connected(requester_id):
+            bot.reply_to(message, "⚠️ شما در حال حاضر در یک چت فعال هستید!")
+            return
+            
+        # بررسی وجود درخواست قبلی
+        existing_request = connections.get_pending_owner(requester_id)
+        if existing_request:
+            logger.info(f"Found existing request for {requester_id} -> {existing_request}")
+            bot.reply_to(message, "⚠️ شما قبلاً یک درخواست ارسال کرده‌اید!")
+            return
+            
+        # ذخیره درخواست
+        connections.add_pending(requester_id, target_id)
+        logger.info(f"Added new pending request: {requester_id} -> {target_id}")
+        logger.info(f"Current pending connections: {connections.get_all_pending()}")
+        
+        # ارسال پیام به کاربر هدف
+        keyboard = types.InlineKeyboardMarkup()
+        accept_button = types.InlineKeyboardButton("✅ پذیرش", callback_data="accept_connection")
+        reject_button = types.InlineKeyboardButton("❌ رد", callback_data="reject_connection")
+        keyboard.add(accept_button, reject_button)
+        
+        try:
+            bot.send_message(
+                target_id,
+                "⚡️ درخواستی برای پذیرش یافت شد!",
+                reply_markup=keyboard
+            )
+            bot.reply_to(message, "✅ درخواست شما ارسال شد!")
+            logger.info("Request message sent successfully")
+        except Exception as e:
+            logger.error(f"Error sending request message: {str(e)}")
+            connections.remove_pending(requester_id)
+            bot.reply_to(message, "❌ خطا در ارسال درخواست! لطفاً دوباره تلاش کنید.")
+            
+    except ValueError:
+        logger.error("Invalid target_id format")
+        bot.reply_to(message, "❌ لینک نامعتبر است!")
+    except Exception as e:
+        logger.error(f"Error in deep linking: {str(e)}")
+        bot.reply_to(message, "❌ خطایی رخ داد! لطفاً دوباره تلاش کنید.")
+
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     logger = logging.getLogger(__name__)
@@ -251,17 +312,22 @@ def handle_callback(call):
         
         if call.data == "accept_connection":
             logger.info("Processing accept_connection")
-            logger.info(f"All pending connections: {connections.get_all_pending()}")
+            logger.info(f"All pending connections before processing: {connections.get_all_pending()}")
             
             requester_id = connections.find_pending_request(user_id)
             logger.info(f"Found requester_id: {requester_id}")
             
             if requester_id:
+                # اول پیام تایید رو به کاربر نشون بدیم
                 bot.answer_callback_query(call.id, "✅ درخواست پذیرفته شد")
+                
+                # حذف درخواست از لیست انتظار
+                connections.remove_pending(requester_id)
+                logger.info(f"Removed pending request. Current pending: {connections.get_all_pending()}")
                 
                 # اتصال کاربران
                 connections.connect_users(user_id, requester_id)
-                connections.remove_pending(requester_id)
+                logger.info(f"Connected users. Active connections: {connections.active_connections}")
                 
                 try:
                     # ارسال پیام به درخواست‌دهنده
@@ -282,8 +348,10 @@ def handle_callback(call):
                     
                 except Exception as e:
                     logger.error(f"Error sending confirmation messages: {str(e)}")
+                    connections.disconnect_users(user_id)  # در صورت خطا اتصال رو قطع می‌کنیم
                     bot.send_message(user_id, "❌ خطا در برقراری ارتباط! لطفاً دوباره تلاش کنید.")
             else:
+                logger.warning(f"No pending request found for user {user_id}")
                 bot.answer_callback_query(call.id, "❌ درخواستی یافت نشد")
                 bot.send_message(user_id, "⚠️ درخواستی برای پذیرش یافت نشد!")
                 
