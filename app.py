@@ -6,6 +6,7 @@ import os
 import random
 import string
 from collections import defaultdict
+import asyncio
 import logging
 import requests
 from pathlib import Path
@@ -27,7 +28,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 BASE_PATH = Path(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = BASE_PATH / 'user_database.db'
 
-# متغیرهای گلوبال
+# Store active connections and pending requests
 active_connections = defaultdict(dict)
 pending_connections = {}
 
@@ -177,54 +178,87 @@ t.me/{bot.get_me().username}?start={special_link}
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
+    logger = logging.getLogger(__name__)
     try:
         user_id = call.from_user.id
+        logger.info(f"Callback received from user {user_id}: {call.data}")
         
         if call.data == "accept_connection":
             bot.answer_callback_query(call.id, "✅ درخواست پذیرفته شد")
+            logger.info("Processing accept_connection")
+            logger.info(f"Current pending_connections: {pending_connections}")
+            
             requester_id = None
+            # پیدا کردن درخواست‌دهنده
             for req_id, owner_id in pending_connections.items():
                 if owner_id == user_id:
                     requester_id = req_id
+                    logger.info(f"Found requester_id: {requester_id}")
+                    
+                    # حذف اتصالات قبلی اگر وجود دارند
+                    if user_id in active_connections:
+                        del active_connections[user_id]
+                    if requester_id in active_connections:
+                        del active_connections[requester_id]
+                    
+                    # ایجاد اتصال جدید
                     active_connections[owner_id] = {'connected_to': req_id}
                     active_connections[req_id] = {'connected_to': owner_id}
+                    
+                    # حذف از درخواست‌های در انتظار
                     del pending_connections[req_id]
+                    
+                    logger.info(f"Updated active_connections: {active_connections}")
                     break
-                
+            
             if requester_id:
-                disconnect_message = bot.send_message(
-                    requester_id,
-                    """✨ درخواست چت شما پذیرفته شد!
+                try:
+                    logger.info("Sending confirmation messages")
+                    # ارسال پیام به درخواست‌دهنده
+                    disconnect_message = bot.send_message(
+                        requester_id,
+                        """✨ درخواست چت شما پذیرفته شد!
 
 💭 حالا می‌توانید پیام‌های خود را ارسال کنید.
 
 ❤️ امیدواریم گفتگوی خوبی داشته باشید!
 
 ⚠️ برای قطع ارتباط از دکمه زیر استفاده کنید:""",
-                    reply_markup=create_disconnect_button()
-                )
-                bot.pin_chat_message(requester_id, disconnect_message.message_id)
-                
-                owner_disconnect_message = bot.send_message(
-                    user_id,
-                    """🤝 شما درخواست چت را پذیرفتید!
+                        reply_markup=create_disconnect_button()
+                    )
+                    bot.pin_chat_message(requester_id, disconnect_message.message_id)
+                    
+                    # ارسال پیام به پذیرنده
+                    owner_disconnect_message = bot.send_message(
+                        user_id,
+                        """🤝 شما درخواست چت را پذیرفتید!
 
 💭 حالا می‌توانید پیام‌های خود را ارسال کنید.
 
 ❤️ امیدواریم گفتگوی خوبی داشته باشید!
 
 ⚠️ برای قطع ارتباط از دکمه زیر استفاده کنید:""",
-                    reply_markup=create_disconnect_button()
-                )
-                bot.pin_chat_message(user_id, owner_disconnect_message.message_id)
-                
+                        reply_markup=create_disconnect_button()
+                    )
+                    bot.pin_chat_message(user_id, owner_disconnect_message.message_id)
+                    
+                    logger.info(f"Connection established between {user_id} and {requester_id}")
+                except Exception as e:
+                    logger.error(f"Error sending confirmation messages: {str(e)}")
+            else:
+                logger.warning("No pending request found for this user")
+                bot.send_message(user_id, "⚠️ درخواستی برای پذیرش یافت نشد!")
+        
         elif call.data == "reject_connection":
             bot.answer_callback_query(call.id, "❌ درخواست رد شد")
+            logger.info("Processing reject_connection")
             requester_id = None
+            
             for req_id, owner_id in pending_connections.items():
                 if owner_id == user_id:
                     requester_id = req_id
                     del pending_connections[req_id]
+                    logger.info(f"Removed requester_id: {requester_id}")
                     break
             
             if requester_id:
@@ -236,90 +270,115 @@ def handle_callback(call):
                 )
                 
         elif call.data == "disconnect":
-            bot.answer_callback_query(call.id, "❌ چت قطع شد")
+            bot.answer_callback_query(call.id, "❌ قطع ارتباط")
+            logger.info("Processing disconnect")
             if user_id in active_connections:
                 other_user = active_connections[user_id].get('connected_to')
-                if other_user:
-                    try:
-                        bot.unpin_all_chat_messages(user_id)
-                        bot.unpin_all_chat_messages(other_user)
-                    except:
-                        pass
+                logger.info(f"Disconnecting user {user_id} from user {other_user}")
+                try:
+                    bot.unpin_all_chat_messages(user_id)
+                    bot.unpin_all_chat_messages(other_user)
+                except:
+                    pass
 
-                    bot.send_message(user_id, """❌ چت پایان یافت!
-
-🌟 امیدواریم از این گفتگو لذت برده باشید.
-✨ می‌توانید دوباره با کاربران دیگر چت کنید!""")
-                    bot.send_message(other_user, """❌ کاربر مقابل چت را پایان داد.
+                bot.send_message(user_id, """❌ چت پایان یافت!
 
 🌟 امیدواریم از این گفتگو لذت برده باشید.
 ✨ می‌توانید دوباره با کاربران دیگر چت کنید!""")
-                    
-                    del active_connections[user_id]
-                    del active_connections[other_user]
-                    
+                bot.send_message(other_user, """❌ کاربر مقابل چت را پایان داد.
+
+🌟 امیدواریم از این گفتگو لذت برده باشید.
+✨ می‌توانید دوباره با کاربران دیگر چت کنید!""")
+                
+                del active_connections[user_id]
+                del active_connections[other_user]
+                
     except Exception as e:
-        print(f"خطا در هندلر کال‌بک: {e}")
+        logger.error(f"Error in callback handler: {str(e)}")
         bot.answer_callback_query(call.id, "❌ متأسفانه مشکلی پیش آمده! لطفاً دوباره تلاش کنید.")
 
 @bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'video_note', 'sticker', 'animation'])
 def handle_messages(message):
-    if message.from_user.id in active_connections:
-        other_user = active_connections[message.from_user.id].get('connected_to')
-        if other_user:
-            try:
-                # ارسال متن
+    logger = logging.getLogger(__name__)
+    user_id = message.from_user.id
+    logger.info(f"Received message from user {user_id}")
+    logger.info(f"Current active_connections: {active_connections}")
+    
+    try:
+        if user_id in active_connections:
+            other_user = active_connections[user_id].get('connected_to')
+            logger.info(f"Found connection for user {user_id} to {other_user}")
+            
+            if other_user:
                 if message.text:
-                    bot.send_message(other_user, f"💬 پیام جدید:\n{message.text}")
+                    logger.info(f"Sending text message from {user_id} to {other_user}")
+                    sent_msg = bot.send_message(other_user, f"💬 پیام جدید:\n{message.text}")
+                    logger.info(f"Message sent successfully: {sent_msg.message_id}")
                 
-                # ارسال عکس
                 elif message.photo:
+                    logger.info(f"Sending photo from {user_id} to {other_user}")
                     caption = message.caption if message.caption else ""
-                    bot.send_photo(other_user, message.photo[-1].file_id, caption=f"🖼️ تصویر جدید:\n{caption}")
+                    sent_msg = bot.send_photo(other_user, message.photo[-1].file_id, caption=f"🖼️ تصویر جدید:\n{caption}")
+                    logger.info(f"Photo sent successfully: {sent_msg.message_id}")
                 
-                # ارسال ویدیو
                 elif message.video:
+                    logger.info(f"Sending video from {user_id} to {other_user}")
                     caption = message.caption if message.caption else ""
-                    bot.send_video(other_user, message.video.file_id, caption=f"🎥 ویدیو جدید:\n{caption}")
+                    sent_msg = bot.send_video(other_user, message.video.file_id, caption=f"🎥 ویدیو جدید:\n{caption}")
+                    logger.info(f"Video sent successfully: {sent_msg.message_id}")
                 
-                # ارسال فایل
                 elif message.document:
+                    logger.info(f"Sending document from {user_id} to {other_user}")
                     caption = message.caption if message.caption else ""
-                    bot.send_document(other_user, message.document.file_id, caption=f"📎 فایل جدید:\n{caption}")
+                    sent_msg = bot.send_document(other_user, message.document.file_id, caption=f"📎 فایل جدید:\n{caption}")
+                    logger.info(f"Document sent successfully: {sent_msg.message_id}")
                 
-                # ارسال صوت
                 elif message.audio:
+                    logger.info(f"Sending audio from {user_id} to {other_user}")
                     caption = message.caption if message.caption else ""
-                    bot.send_audio(other_user, message.audio.file_id, caption=f"🎵 موزیک جدید:\n{caption}")
+                    sent_msg = bot.send_audio(other_user, message.audio.file_id, caption=f"🎵 موزیک جدید:\n{caption}")
+                    logger.info(f"Audio sent successfully: {sent_msg.message_id}")
                 
-                # ارسال ویس
                 elif message.voice:
+                    logger.info(f"Sending voice from {user_id} to {other_user}")
                     caption = message.caption if message.caption else ""
-                    bot.send_voice(other_user, message.voice.file_id, caption=f"🎤 پیام صوتی جدید:\n{caption}")
+                    sent_msg = bot.send_voice(other_user, message.voice.file_id, caption=f"🎤 پیام صوتی جدید:\n{caption}")
+                    logger.info(f"Voice sent successfully: {sent_msg.message_id}")
                 
-                # ارسال ویدیو نوت
                 elif message.video_note:
-                    bot.send_video_note(other_user, message.video_note.file_id)
+                    logger.info(f"Sending video note from {user_id} to {other_user}")
+                    sent_msg = bot.send_video_note(other_user, message.video_note.file_id)
+                    logger.info(f"Video note sent successfully: {sent_msg.message_id}")
                 
-                # ارسال استیکر
                 elif message.sticker:
-                    bot.send_sticker(other_user, message.sticker.file_id)
+                    logger.info(f"Sending sticker from {user_id} to {other_user}")
+                    sent_msg = bot.send_sticker(other_user, message.sticker.file_id)
+                    logger.info(f"Sticker sent successfully: {sent_msg.message_id}")
                 
-                # ارسال گیف
                 elif message.animation:
+                    logger.info(f"Sending animation from {user_id} to {other_user}")
                     caption = message.caption if message.caption else ""
-                    bot.send_animation(other_user, message.animation.file_id, caption=f"✨ گیف جدید:\n{caption}")
+                    sent_msg = bot.send_animation(other_user, message.animation.file_id, caption=f"✨ گیف جدید:\n{caption}")
+                    logger.info(f"Animation sent successfully: {sent_msg.message_id}")
                 
-            except Exception as e:
-                print(f"خطا در ارسال پیام: {e}")
-                bot.send_message(message.chat.id, "❌ خطا در ارسال پیام! لطفاً دوباره تلاش کنید.")
-    else:
-        bot.reply_to(message, """📝 برای شروع چت:
+            else:
+                logger.error(f"No connected_to user found for user {user_id} in active_connections")
+                bot.reply_to(message, "⚠️ خطا در ارتباط! لطفاً دوباره چت را شروع کنید.")
+                # پاک کردن اتصال مشکل‌دار
+                if user_id in active_connections:
+                    del active_connections[user_id]
+        else:
+            logger.warning(f"User {user_id} not in active_connections")
+            bot.reply_to(message, """📝 برای شروع چت:
 
 1️⃣ لینک اختصاصی خود را با دوستانتان به اشتراک بگذارید
 2️⃣ یا از لینک دوستانتان استفاده کنید
 
 ✨ همین حالا چت را شروع کنید!""", reply_markup=create_web_app_button(message.from_user.id))
+            
+    except Exception as e:
+        logger.error(f"Error in handle_messages: {str(e)}")
+        bot.reply_to(message, "❌ خطایی رخ داد! لطفاً دوباره تلاش کنید.")
 
 # Flask route to display user data
 @app.route('/')
@@ -375,6 +434,7 @@ def webhook():
         logger.error(f"Error in webhook: {e}")
         return str(e), 500
 
+# Start the Flask app
 if __name__ == "__main__":
     # تنظیمات لاگینگ
     logging.basicConfig(
@@ -386,6 +446,7 @@ if __name__ == "__main__":
         ]
     )
     logger = logging.getLogger(__name__)
+    logger.info("Starting bot...")
     
     # اطمینان از وجود دیتابیس
     conn, cursor = create_or_connect_database()
