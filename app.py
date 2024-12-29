@@ -1,4 +1,3 @@
-import logging
 from flask import Flask, request, render_template, redirect, url_for
 import telebot
 from telebot import types
@@ -7,14 +6,12 @@ import os
 import random
 import string
 from collections import defaultdict
+import asyncio
+import logging
 import requests
 from pathlib import Path
 import time
 import threading
-
-# Configure logging at the beginning of the file
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # تنظیمات اصلی
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -43,10 +40,8 @@ def ensure_directory_exists():
         print(f"خطای دایرکتوری: {e}")
         return False
 
-# Improved error handling and logging for database connection
 def create_or_connect_database():
     if not ensure_directory_exists():
-        logger.error("Failed to ensure directory exists.")
         return None, None
 
     try:
@@ -66,17 +61,10 @@ def create_or_connect_database():
                 )
             ''')
             conn.commit()
-        logger.info("Database connected successfully.")
         return conn, cursor
-    except sqlite3.Error as e:
-        logger.error(f"Database error: {e}")
-        return None, None
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        print(f"خطای پایگاه داده: {e}")
         return None, None
-    finally:
-        if conn:
-            conn.close()
 
 def generate_unique_link():
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
@@ -101,7 +89,6 @@ def create_web_app_button(user_id):
     keyboard.add(web_app_button)
     return keyboard
 
-# Example of adding timeout to a network request
 def get_user_profile_photo(user_id):
     try:
         user_profile_photos = bot.get_user_profile_photos(user_id)
@@ -112,11 +99,8 @@ def get_user_profile_photo(user_id):
             return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
         else:
             return "https://via.placeholder.com/150"
-    except requests.exceptions.Timeout:
-        logger.error("Request timed out")
-        return "https://via.placeholder.com/150"
     except Exception as e:
-        logger.error(f"Error fetching user profile photo: {e}")
+        print(f"خطا در دریافت عکس پروفایل: {e}")
         return "https://via.placeholder.com/150"
 
 @bot.message_handler(commands=['start'])
@@ -190,8 +174,7 @@ t.me/{bot.get_me().username}?start={special_link}
         print(f"خطا در هندلر شروع: {e}")
         bot.reply_to(message, "❌ متأسفانه مشکلی پیش آمده!\n\n🔄 لطفاً چند لحظه دیگر دوباره تلاش کنید.", reply_markup=create_web_app_button(message.from_user.id))
     finally:
-        if conn:
-            conn.close()
+        conn.close()
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
@@ -329,12 +312,12 @@ def handle_messages(message):
                 print(f"خطا در ارسال پیام: {e}")
                 bot.send_message(message.chat.id, "❌ خطا در ارسال پیام! لطفاً دوباره تلاش کنید.")
     else:
-        # bot.reply_to(message, """📝 برای شروع چت:
-        # 1️⃣ لینک اختصاصی خود را با دوستانتان به اشتراک بگذارید
-        # 2️⃣ یا از لینک دوستانتان استفاده کنید
-        # ✨ همین حالا چت را شروع کنید!
-        # """)
-        bot.reply_to(message, "", reply_markup=create_web_app_button(message.from_user.id))
+        bot.reply_to(message, """📝 برای شروع چت:
+
+1️⃣ لینک اختصاصی خود را با دوستانتان به اشتراک بگذارید
+2️⃣ یا از لینک دوستانتان استفاده کنید
+
+✨ همین حالا چت را شروع کنید!""", reply_markup=create_web_app_button(message.from_user.id))
 
 # Flask route to display user data
 @app.route('/')
@@ -392,6 +375,8 @@ def webhook():
 
 # Start the Flask app
 if __name__ == "__main__":
+    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+    logger = logging.getLogger(__name__)
     logger.info("Starting bot...")
     
     # اطمینان از وجود دایرکتوری‌ها
