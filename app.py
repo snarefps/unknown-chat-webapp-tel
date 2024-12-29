@@ -15,14 +15,13 @@ from pathlib import Path
 BOT_TOKEN = os.getenv('BOT_TOKEN', '7359047596:AAFzCjMQM1YuovahhOqXB1BS9lijCxu29Ew')
 BOT_USERNAME = os.getenv('BOT_USERNAME', 'your_bot_username')
 DOMAIN = os.getenv('DOMAIN', 'https://your-domain.com')
-
+bot = telebot.TeleBot(BOT_TOKEN)
 # تنظیمات Flask
 app = Flask(__name__, template_folder='templates', static_folder='static')
-app.config['SECRET_KEY'] = os.urandom(24)
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+
 
 # تنظیمات Telegram bot
-bot = telebot.TeleBot(BOT_TOKEN)
+
 
 # تنظیمات مسیرها و دیتابیس
 BASE_PATH = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -83,7 +82,7 @@ def create_disconnect_button():
     return keyboard
 
 def create_web_app_button(user_id):
-    web_app_info = types.WebAppInfo(url=f"https://ideal-pangolin-solely.ngrok-free.app/users?telegram_user_id={user_id}")
+    web_app_info = types.WebAppInfo(url=f"{DOMAIN}/users?telegram_user_id={user_id}")
     markup = types.InlineKeyboardMarkup()
     web_app_btn = types.InlineKeyboardButton("باز کردن وب اپلیکیشن", web_app=web_app_info)
     markup.add(web_app_btn)
@@ -392,10 +391,11 @@ if __name__ == "__main__":
     if conn and cursor:
         conn.close()
     
-    # اجرای سرور
-    app.run(
-        host='0.0.0.0',
-        port=int(os.getenv('PORT', 5000)),
-        debug=False,
-        threaded=True
-    )
+if __name__ == "__main__":
+    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.DEBUG)
+    logger = logging.getLogger(__name__)
+    logger.debug("Starting bot...")
+    # Start both Flask and bot polling in separate threads
+    import threading
+    threading.Thread(target=bot.polling, daemon=True).start()
+    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
