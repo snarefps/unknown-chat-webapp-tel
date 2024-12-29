@@ -1,17 +1,14 @@
-from flask import Flask, request, render_template, redirect, url_for
-import telebot
-from telebot import types
-import sqlite3
 import os
+import telebot
+from flask import Flask, request
+import sqlite3
 import random
 import string
-from collections import defaultdict
 import logging
-import requests
+from collections import defaultdict
 from pathlib import Path
 import time
 import threading
-import json
 
 # تنظیمات اصلی
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -32,247 +29,58 @@ logger = logging.getLogger(__name__)
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # تنظیمات Flask
-app = Flask(__name__, template_folder='templates', static_folder='static')
-app.config['SECRET_KEY'] = os.urandom(24)
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app = Flask(__name__)
 
 # تنظیمات مسیرها و دیتابیس
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_PATH, 'user_database.db')
 
-# ساختار داده برای نگهداری وضعیت چت
-class ChatState:
-    def __init__(self):
-        self._connections = {}
-        self._pending = {}
-        self._lock = threading.Lock()
-        self._state_file = 'chat_state.json'
-        self._last_save = 0
-        self._save_interval = 1  # حداقل فاصله بین ذخیره‌سازی‌ها (ثانیه)
-        self._load_state()
-        
-    def _load_state(self):
-        try:
-            if os.path.exists(self._state_file):
-                with open(self._state_file, 'r') as f:
-                    data = json.load(f)
-                    self._connections = data.get('connections', {})
-                    self._pending = data.get('pending', {})
-                    logger.info("Chat state loaded successfully")
-        except Exception as e:
-            logger.error(f"Error loading chat state: {e}")
-            
-    def _save_state(self):
-        current_time = time.time()
-        if current_time - self._last_save < self._save_interval:
-            return
-            
-        try:
-            temp_file = f"{self._state_file}.temp"
-            with open(temp_file, 'w') as f:
-                json.dump({
-                    'connections': self._connections,
-                    'pending': self._pending,
-                    'timestamp': current_time
-                }, f)
-            os.replace(temp_file, self._state_file)
-            self._last_save = current_time
-            logger.debug("Chat state saved successfully")
-        except Exception as e:
-            logger.error(f"Error saving chat state: {e}")
-        
-    def add_pending(self, from_id, to_id):
-        with self._lock:
-            try:
-                from_id, to_id = str(from_id), str(to_id)
-                if from_id not in self._connections and to_id not in self._connections:
-                    self._pending[from_id] = {
-                        'to_id': to_id,
-                        'timestamp': time.time()
-                    }
-                    self._save_state()
-                    logger.info(f"Added pending connection: {from_id} -> {to_id}")
-                    return True
-                return False
-            except Exception as e:
-                logger.error(f"Error in add_pending: {e}")
-                return False
-        
-    def accept_chat(self, from_id, to_id):
-        with self._lock:
-            try:
-                from_id, to_id = str(from_id), str(to_id)
-                if from_id in self._pending and self._pending[from_id]['to_id'] == to_id:
-                    current_time = time.time()
-                    self._connections[from_id] = {
-                        'partner': to_id,
-                        'timestamp': current_time,
-                        'active': True,
-                        'messages_count': 0,
-                        'last_message_time': current_time
-                    }
-                    self._connections[to_id] = {
-                        'partner': from_id,
-                        'timestamp': current_time,
-                        'active': True,
-                        'messages_count': 0,
-                        'last_message_time': current_time
-                    }
-                    del self._pending[from_id]
-                    self._save_state()
-                    logger.info(f"Chat accepted: {from_id} <-> {to_id}")
-                    return True
-                return False
-            except Exception as e:
-                logger.error(f"Error in accept_chat: {e}")
-                return False
-        
-    def get_partner(self, user_id):
-        with self._lock:
-            try:
-                user_id = str(user_id)
-                if user_id in self._connections and self._connections[user_id]['active']:
-                    conn = self._connections[user_id]
-                    partner = conn['partner']
-                    
-                    # بروزرسانی timestamp و شمارنده پیام‌ها
-                    current_time = time.time()
-                    conn['timestamp'] = current_time
-                    conn['last_message_time'] = current_time
-                    conn['messages_count'] = conn.get('messages_count', 0) + 1
-                    
-                    if partner in self._connections:
-                        partner_conn = self._connections[partner]
-                        partner_conn['timestamp'] = current_time
-                        partner_conn['last_message_time'] = current_time
-                        partner_conn['messages_count'] = partner_conn.get('messages_count', 0)
-                        
-                        # اطمینان از فعال بودن هر دو طرف
-                        conn['active'] = True
-                        partner_conn['active'] = True
-                        
-                        self._save_state()
-                        return partner
-                    else:
-                        logger.error(f"Partner {partner} not found for user {user_id}")
-                        return None
-                return None
-            except Exception as e:
-                logger.error(f"Error in get_partner: {e}")
-                return None
-        
-    def is_connected(self, user_id):
-        with self._lock:
-            try:
-                user_id = str(user_id)
-                if user_id in self._connections:
-                    conn = self._connections[user_id]
-                    partner = conn.get('partner')
-                    
-                    if partner and partner in self._connections:
-                        # بررسی فعال بودن هر دو طرف
-                        both_active = (conn['active'] and 
-                                     self._connections[partner]['active'])
-                        
-                        # بررسی آخرین زمان پیام
-                        current_time = time.time()
-                        last_message = max(conn.get('last_message_time', 0),
-                                         self._connections[partner].get('last_message_time', 0))
-                        
-                        # اگر بیش از 5 دقیقه پیامی رد و بدل نشده، اتصال را قطع می‌کنیم
-                        if current_time - last_message > 300:
-                            logger.info(f"Connection timed out for users {user_id} and {partner}")
-                            self.end_chat(user_id)
-                            return False
-                            
-                        return both_active
-                return False
-            except Exception as e:
-                logger.error(f"Error in is_connected: {e}")
-                return False
-
-    def end_chat(self, user_id):
-        with self._lock:
-            try:
-                user_id = str(user_id)
-                if user_id in self._connections:
-                    partner_id = self._connections[user_id]['partner']
-                    if partner_id in self._connections:
-                        del self._connections[partner_id]
-                    del self._connections[user_id]
-                    self._save_state()
-                    logger.info(f"Chat ended: {user_id} <-> {partner_id}")
-                    return partner_id
-                return None
-            except Exception as e:
-                logger.error(f"Error in end_chat: {e}")
-                return None
-        
-    def cleanup_old_connections(self):
-        try:
-            current_time = time.time()
-            with self._lock:
-                # پاکسازی درخواست‌های قدیمی (بعد از 5 دقیقه)
-                for user_id in list(self._pending.keys()):
-                    if current_time - self._pending[user_id]['timestamp'] > 300:
-                        del self._pending[user_id]
-                        logger.info(f"Cleaned up pending request for user {user_id}")
-                
-                # پاکسازی چت‌های غیرفعال (بعد از 30 دقیقه)
-                for user_id in list(self._connections.keys()):
-                    if current_time - self._connections[user_id]['timestamp'] > 1800:
-                        partner_id = self.end_chat(user_id)
-                        if partner_id:
-                            logger.info(f"Cleaned up inactive chat: {user_id} <-> {partner_id}")
-                
-                self._save_state()
-        except Exception as e:
-            logger.error(f"Error in cleanup_old_connections: {e}")
-
-chat_state = ChatState()
+# ذخیره وضعیت چت‌ها
+active_connections = {}
+pending_connections = {}
 
 def ensure_directory_exists():
     try:
-        os.makedirs(BASE_PATH, exist_ok=True)
-        return True
+        Path(BASE_PATH).mkdir(parents=True, exist_ok=True)
     except Exception as e:
-        print(f"خطای دایرکتوری: {e}")
-        return False
+        logger.error(f"Error creating directory: {e}")
 
 def create_or_connect_database():
     try:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            numeric_id INTEGER UNIQUE,
+        # ایجاد جدول users اگر وجود نداشته باشد
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            numeric_id INTEGER,
             username TEXT,
             telegram_user_id INTEGER UNIQUE,
             special_link TEXT UNIQUE,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )''')
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        ''')
         conn.commit()
         return conn, cursor
     except Exception as e:
-        print(f"خطای پایگاه داده: {e}")
+        logger.error(f"Database error: {e}")
         return None, None
 
-def generate_unique_link():
-    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+def generate_unique_link(length=10):
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
 def create_connection_buttons():
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    accept_btn = types.InlineKeyboardButton("✅ قبول", callback_data='accept_connection')
-    reject_btn = types.InlineKeyboardButton("❌ رد", callback_data='reject_connection')
-    markup.add(accept_btn, reject_btn)
-    return markup
+    return telebot.types.InlineKeyboardMarkup([
+        [
+            telebot.types.InlineKeyboardButton("✅ قبول", callback_data="accept_connection"),
+            telebot.types.InlineKeyboardButton("❌ رد", callback_data="reject_connection")
+        ]
+    ])
 
 def create_disconnect_button():
-    keyboard = types.InlineKeyboardMarkup()
-    disconnect_btn = types.InlineKeyboardButton("❌ قطع ارتباط", callback_data="disconnect")
-    keyboard.add(disconnect_btn)
-    return keyboard
+    return telebot.types.InlineKeyboardMarkup([
+        [telebot.types.InlineKeyboardButton("❌ قطع ارتباط", callback_data="disconnect")]
+    ])
 
 @bot.message_handler(commands=['start'])
 def handle_start(message):
@@ -297,16 +105,13 @@ def handle_start(message):
                     return
                     
                 logger.info(f"Creating chat request from {message.from_user.id} to {owner[0]}")
-                if chat_state.add_pending(message.from_user.id, owner[0]):
-                    bot.send_message(
-                        owner[0],
-                        f"✨ درخواست چت جدید!\n\n👤 کاربر {message.from_user.username or 'ناشناس'} می‌خواهد با شما گفتگو کند.",
-                        reply_markup=create_connection_buttons()
-                    )
-                    bot.reply_to(message, "🌟 درخواست چت شما ارسال شد!\n\n⏳ لطفاً منتظر پاسخ بمانید...")
-                else:
-                    logger.warning(f"Failed to add pending chat request from {message.from_user.id} to {owner[0]}")
-                    bot.reply_to(message, "خطایی رخ داد. لطفاً دوباره تلاش کنید.")
+                pending_connections[message.from_user.id] = owner[0]
+                bot.send_message(
+                    owner[0],
+                    f"✨ درخواست چت جدید!\n\n👤 کاربر {message.from_user.username or 'ناشناس'} می‌خواهد با شما گفتگو کند.",
+                    reply_markup=create_connection_buttons()
+                )
+                bot.reply_to(message, "🌟 درخواست چت شما ارسال شد!\n\n⏳ لطفاً منتظر پاسخ بمانید...")
             else:
                 logger.warning(f"Invalid special link used: {special_link}")
                 bot.reply_to(message, "⚠️ لینک نامعتبر است.")
@@ -316,7 +121,7 @@ def handle_start(message):
             
             if existing_user:
                 logger.info(f"Existing user {message.from_user.id} started bot")
-                special_link = existing_user[4]
+                special_link = existing_user[3]
                 share_link = f"https://t.me/{BOT_USERNAME}?start={special_link}"
                 bot.reply_to(
                     message, 
@@ -338,7 +143,7 @@ def handle_start(message):
                 share_link = f"https://t.me/{BOT_USERNAME}?start={special_link}"
                 welcome_msg = f"""
 🎈 به ربات ما خوش آمدید!
-🔗 لینک اختصاصی شما: 
+🔗 لینک اختصاصی شما:
 {share_link}"""
                 bot.reply_to(message, welcome_msg)
 
@@ -355,96 +160,57 @@ def handle_callback(call):
         logger.info(f"Callback received: {call.data} from user {call.from_user.id}")
         if call.data == 'accept_connection':
             requester_id = None
-            logger.debug(f"Current pending connections: {chat_state._pending}")
-            
-            # پیدا کردن درخواست مربوطه
-            for req_id, data in list(chat_state._pending.items()):
-                logger.debug(f"Checking request {req_id} -> {data}")
-                if str(data['to_id']) == str(call.from_user.id):
+            for req_id, owner_id in pending_connections.items():
+                if owner_id == call.from_user.id:
                     requester_id = req_id
-                    logger.info(f"Found matching request: {req_id} -> {call.from_user.id}")
+                    logger.info(f"Accepting chat request: {req_id} -> {owner_id}")
+                    active_connections[owner_id] = {'connected_to': req_id}
+                    active_connections[req_id] = {'connected_to': owner_id}
+                    del pending_connections[req_id]
                     break
             
             if requester_id:
-                logger.info(f"Attempting to accept chat between {requester_id} and {call.from_user.id}")
-                if chat_state.accept_chat(requester_id, call.from_user.id):
-                    logger.info(f"Chat successfully established between {call.from_user.id} and {requester_id}")
-                    
-                    # ارسال پیام تایید به هر دو کاربر
-                    try:
-                        bot.edit_message_text(
-                            "✅ ارتباط برقرار شد.",
-                            call.message.chat.id,
-                            call.message.message_id,
-                            reply_markup=create_disconnect_button()
-                        )
-                    except Exception as e:
-                        logger.error(f"Error editing acceptance message: {e}")
-                    
-                    try:
-                        bot.send_message(
-                            int(requester_id),
-                            "✅ درخواست چت شما پذیرفته شد!",
-                            reply_markup=create_disconnect_button()
-                        )
-                    except Exception as e:
-                        logger.error(f"Error sending acceptance message to requester: {e}")
-                else:
-                    logger.error(f"Failed to accept chat between {requester_id} and {call.from_user.id}")
-                    bot.answer_callback_query(call.id, "خطا در برقراری ارتباط. لطفاً دوباره تلاش کنید.")
-            else:
-                logger.warning(f"No pending request found for user {call.from_user.id}")
-                bot.answer_callback_query(call.id, "درخواست چت یافت نشد.")
-        
+                logger.debug(f"Chat established between {call.from_user.id} and {requester_id}")
+                bot.edit_message_text(
+                    "✅ ارتباط برقرار شد.",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=create_disconnect_button()
+                )
+                bot.send_message(
+                    requester_id,
+                    "✅ درخواست چت شما پذیرفته شد!",
+                    reply_markup=create_disconnect_button()
+                )
+                
         elif call.data == 'reject_connection':
-            rejected = False
-            for req_id, data in list(chat_state._pending.items()):
-                if str(data['to_id']) == str(call.from_user.id):
+            for req_id, owner_id in list(pending_connections.items()):
+                if owner_id == call.from_user.id:
                     logger.info(f"Rejecting chat request from {req_id}")
-                    try:
-                        bot.send_message(int(req_id), "❌ درخواست چت شما رد شد.")
-                    except Exception as e:
-                        logger.error(f"Error sending rejection message: {e}")
-                        
-                    try:
-                        bot.edit_message_text(
-                            "❌ درخواست رد شد.",
-                            call.message.chat.id,
-                            call.message.message_id
-                        )
-                    except Exception as e:
-                        logger.error(f"Error editing rejection message: {e}")
-                        
-                    del chat_state._pending[req_id]
-                    rejected = True
+                    bot.send_message(req_id, "❌ درخواست چت شما رد شد.")
+                    del pending_connections[req_id]
+                    bot.edit_message_text(
+                        "❌ درخواست رد شد.",
+                        call.message.chat.id,
+                        call.message.message_id
+                    )
                     break
-                    
-            if not rejected:
-                logger.warning(f"No request found to reject for user {call.from_user.id}")
-                bot.answer_callback_query(call.id, "درخواست چت یافت نشد.")
                 
         elif call.data == "disconnect":
-            logger.info(f"Disconnect requested by user {call.from_user.id}")
-            partner_id = chat_state.end_chat(call.from_user.id)
-            if partner_id:
-                logger.info(f"Chat ended between {call.from_user.id} and {partner_id}")
-                try:
-                    bot.send_message(int(partner_id), "❌ چت به پایان رسید.")
-                except Exception as e:
-                    logger.error(f"Error sending disconnect message to partner: {e}")
-                    
-                try:
+            user_id = call.from_user.id
+            if user_id in active_connections:
+                other_user = active_connections[user_id].get('connected_to')
+                if other_user:
+                    logger.info(f"Disconnecting chat between {user_id} and {other_user}")
+                    bot.send_message(other_user, "❌ چت به پایان رسید.")
+                    del active_connections[user_id]
+                    del active_connections[other_user]
                     bot.edit_message_text(
                         "❌ چت به پایان رسید.",
                         call.message.chat.id,
                         call.message.message_id
                     )
-                except Exception as e:
-                    logger.error(f"Error editing disconnect message: {e}")
-            else:
-                logger.warning(f"No active chat found to disconnect for user {call.from_user.id}")
-                bot.answer_callback_query(call.id, "چت فعالی یافت نشد.")
-                
+                    
     except Exception as e:
         logger.error(f"Error in callback handler: {e}", exc_info=True)
         bot.answer_callback_query(call.id, "خطایی رخ داد. لطفاً دوباره تلاش کنید.")
@@ -455,13 +221,13 @@ def handle_messages(message):
         user_id = message.from_user.id
         logger.debug(f"Message received from user {user_id}: {message.content_type}")
         
-        if chat_state.is_connected(user_id):
-            partner_id = chat_state.get_partner(user_id)
-            if partner_id:
-                logger.debug(f"Forwarding message from {user_id} to {partner_id}")
+        if user_id in active_connections:
+            other_user = active_connections[user_id].get('connected_to')
+            if other_user:
+                logger.debug(f"Forwarding message from {user_id} to {other_user}")
                 try:
                     if message.content_type == 'text':
-                        bot.send_message(int(partner_id), message.text)
+                        bot.send_message(other_user, message.text)
                     elif message.content_type in ['photo', 'video', 'document', 'audio', 'voice', 'sticker']:
                         file_id = None
                         if message.content_type == 'photo':
@@ -470,11 +236,11 @@ def handle_messages(message):
                             file_id = getattr(message, message.content_type).file_id
                         
                         if message.caption:
-                            getattr(bot, f'send_{message.content_type}')(int(partner_id), file_id, caption=message.caption)
+                            getattr(bot, f'send_{message.content_type}')(other_user, file_id, caption=message.caption)
                         else:
-                            getattr(bot, f'send_{message.content_type}')(int(partner_id), file_id)
+                            getattr(bot, f'send_{message.content_type}')(other_user, file_id)
                     
-                    logger.info(f"Message forwarded successfully from {user_id} to {partner_id}")
+                    logger.info(f"Message forwarded successfully from {user_id} to {other_user}")
                             
                 except Exception as e:
                     logger.error(f"Error sending message: {e}", exc_info=True)
@@ -490,33 +256,22 @@ def handle_messages(message):
         logger.error(f"Error in message handler: {e}", exc_info=True)
         bot.reply_to(message, "خطایی رخ داد. لطفاً دوباره تلاش کنید.")
 
-def cleanup_thread():
-    while True:
-        try:
-            chat_state.cleanup_old_connections()
-        except Exception as e:
-            logger.error(f"Error in cleanup thread: {e}", exc_info=True)
-        time.sleep(60)  # هر دقیقه یکبار چک می‌کند
-
 @app.route('/')
 def index():
     return "Welcome to Chat Bot"
 
-@app.route('/webhook', methods=['POST'])
+@app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
-        return ''
-    return 'OK'
+        return 'OK', 200
+    else:
+        return 'Bad Request', 400
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    
-    # راه‌اندازی thread پاکسازی
-    cleanup_thread = threading.Thread(target=cleanup_thread, daemon=True)
-    cleanup_thread.start()
     
     # راه‌اندازی ربات در thread جداگانه
     bot_thread = threading.Thread(target=bot.polling, daemon=True)
