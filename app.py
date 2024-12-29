@@ -9,27 +9,20 @@ from collections import defaultdict
 import asyncio
 import logging
 import requests
-from pathlib import Path
 
-# تنظیمات اصلی
-BOT_TOKEN = os.getenv('BOT_TOKEN', '7359047596:AAFzCjMQM1YuovahhOqXB1BS9lijCxu29Ew')
-BOT_USERNAME = os.getenv('BOT_USERNAME', 'your_bot_username')
-DOMAIN = os.getenv('DOMAIN', 'https://your-domain.com')
-
-# تنظیمات Flask
-app = Flask(__name__, template_folder='templates', static_folder='static')
-app.config['SECRET_KEY'] = os.urandom(24)
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
-
-# تنظیمات Telegram bot
+BOT_TOKEN = '7359047596:AAFzCjMQM1YuovahhOqXB1BS9lijCxu29Ew'
+BOT_USERNAME = 'your_bot_username'  # Add your bot username here
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# تنظیمات مسیرها و دیتابیس
-BASE_PATH = Path(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = BASE_PATH / 'user_database.db'
+# Flask app setup
+app = Flask(__name__, template_folder='templates', static_folder='static')
+
+# Database configuration
+BASE_PATH = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_PATH, 'user_database.db')
 
 # Store active connections and pending requests
-active_connections = {}
+active_connections = defaultdict(dict)
 pending_connections = {}
 
 def ensure_directory_exists():
@@ -83,7 +76,7 @@ def create_disconnect_button():
     return keyboard
 
 def create_web_app_button(user_id):
-    web_app_info = types.WebAppInfo(url=f"{DOMAIN}/users?telegram_user_id={user_id}")
+    web_app_info = types.WebAppInfo(url=f"https://your-domain.com/users?telegram_user_id={user_id}")
     markup = types.InlineKeyboardMarkup()
     web_app_btn = types.InlineKeyboardButton("باز کردن وب اپلیکیشن", web_app=web_app_info)
     markup.add(web_app_btn)
@@ -108,141 +101,57 @@ def handle_start(message):
     try:
         conn, cursor = create_or_connect_database()
         if not conn or not cursor:
-            bot.reply_to(message, "خطای سیستم. لطفا بعدا دوباره تلاش کنید.")
+            bot.reply_to(message, "❌ خطا در اتصال به پایگاه داده!")
             return
 
-        # پردازش پارامتر start
-        if len(message.text.split()) > 1:
-            special_link = message.text.split()[1]
-            cursor.execute("SELECT telegram_user_id FROM users WHERE special_link = ?", (special_link,))
-            owner = cursor.fetchone()
-            
-            if owner:
-                # بررسی ارتباط با خود
-                if owner[0] == message.from_user.id:
-                    bot.reply_to(message, "⚠️ شما نمی‌توانید با خودتان چت کنید!")
-                    return
-                
-                # بررسی اتصال فعلی
-                if message.from_user.id in active_connections:
-                    bot.reply_to(message, "⚠️ شما در حال حاضر در یک چت هستید! ابتدا آن را قطع کنید.")
-                    return
-                    
-                if owner[0] in active_connections:
-                    bot.reply_to(message, "⚠️ کاربر مورد نظر در حال حاضر در چت است!")
-                    return
-                    
-                pending_connections[message.from_user.id] = owner[0]
-                bot.send_message(
-                    owner[0],
-                    f"✨ درخواست چت جدید!\n\n👤 کاربر {message.from_user.username or 'ناشناس'} می‌خواهد با شما گفتگو کند.\n\n🤝 مایل به برقراری ارتباط هستید؟",
-                    reply_markup=create_connection_buttons()
-                )
-                bot.reply_to(message, "🌟 درخواست چت شما ارسال شد!\n\n⏳ لطفاً منتظر پاسخ بمانید...", reply_markup=create_web_app_button(message.from_user.id))
-            else:
-                bot.reply_to(message, "⚠️ اوه! لینک ارتباطی که استفاده کردید معتبر نیست.\n\n🔄 لطفاً دوباره تلاش کنید.", reply_markup=create_web_app_button(message.from_user.id))
+        user_id = message.from_user.id
+        username = message.from_user.username or "بدون نام کاربری"
+        
+        # Check if user exists
+        cursor.execute('SELECT special_link FROM users WHERE telegram_user_id = ?', (user_id,))
+        existing_user = cursor.fetchone()
+        
+        if existing_user:
+            special_link = existing_user[0]
         else:
-            # ثبت نام کاربر جدید
-            cursor.execute("SELECT * FROM users WHERE telegram_user_id = ?", (message.from_user.id,))
-            existing_user = cursor.fetchone()
-            
-            if existing_user:
-                bot.reply_to(
-                    message, 
-                    f"""🎉 خوش برگشتید {message.from_user.first_name} عزیز!
-
-🔗 لینک اختصاصی شما:
-t.me/{bot.get_me().username}?start={existing_user[4]}
-
-💫 با اشتراک‌گذاری این لینک، دوستانتان می‌توانند مستقیماً با شما چت کنند!""",
-                    reply_markup=create_web_app_button(message.from_user.id)
-                )
-            else:
-                numeric_id = random.randint(10000, 99999)
+            # Generate a unique link
+            while True:
                 special_link = generate_unique_link()
-                
-                cursor.execute(
-                    "INSERT INTO users (numeric_id, username, telegram_user_id, special_link) VALUES (?, ?, ?, ?)",
-                    (numeric_id, message.from_user.username, message.from_user.id, special_link)
-                )
-                conn.commit()
-                
-                welcome_msg = f"""
-🎈 {message.from_user.first_name} عزیز، به ربات ما خوش آمدید!
+                cursor.execute('SELECT id FROM users WHERE special_link = ?', (special_link,))
+                if not cursor.fetchone():
+                    break
+            
+            # Insert new user
+            cursor.execute('''
+                INSERT INTO users (numeric_id, username, telegram_user_id, special_link)
+                VALUES (?, ?, ?, ?)
+            ''', (user_id, username, user_id, special_link))
+            conn.commit()
+        
+        # Send welcome message
+        bot.reply_to(
+            message,
+            f"""👋 سلام به ربات چت ناشناس خوش آمدید!
 
-📝 اطلاعات پروفایل شما:
-🔢 شناسه: {numeric_id}
-🔗 لینک اختصاصی شما: 
-t.me/{bot.get_me().username}?start={special_link}
+🔑 لینک اختصاصی شما:
+https://t.me/{BOT_USERNAME}?start={special_link}
 
-✨ با اشتراک‌گذاری لینک اختصاصی خود، دوستانتان می‌توانند مستقیماً با شما چت کنند!
-                """
-                bot.reply_to(message, welcome_msg, reply_markup=create_web_app_button(message.from_user.id))
+✨ با اشتراک‌گذاری این لینک، دوستانتان می‌توانند به صورت ناشناس با شما چت کنند.
 
+⚡️ برای شروع چت:
+1️⃣ لینک خود را به اشتراک بگذارید
+2️⃣ یا از لینک دوستانتان استفاده کنید
+
+❤️ امیدواریم تجربه خوبی داشته باشید!""",
+            reply_markup=create_web_app_button(user_id)
+        )
+        
     except Exception as e:
-        print(f"خطا در هندلر شروع: {e}")
-        bot.reply_to(message, "❌ متأسفانه مشکلی پیش آمده!\n\n🔄 لطفاً چند لحظه دیگر دوباره تلاش کنید.", reply_markup=create_web_app_button(message.from_user.id))
+        print(f"خطا در هندل استارت: {e}")
+        bot.reply_to(message, "❌ متأسفانه مشکلی پیش آمده! لطفاً دوباره تلاش کنید.")
     finally:
-        conn.close()
-
-@bot.message_handler(func=lambda message: message.text and message.text.startswith('/start '))
-def handle_deep_linking(message):
-    logger = logging.getLogger(__name__)
-    logger.info(f"Deep linking handler called for user {message.from_user.id}")
-    
-    try:
-        # دریافت شناسه کاربر هدف از پارامتر
-        target_id = message.text.split()[1]
-        requester_id = message.from_user.id
-        
-        logger.info(f"Processing deep link: requester={requester_id}, target={target_id}")
-        
-        # تبدیل به عدد
-        target_id = int(target_id)
-        
-        if target_id == requester_id:
-            bot.reply_to(message, "❌ شما نمی‌توانید با خودتان چت کنید!")
-            return
-            
-        if requester_id in active_connections:
-            bot.reply_to(message, "⚠️ شما در حال حاضر در یک چت فعال هستید!")
-            return
-            
-        # بررسی وجود درخواست قبلی
-        if requester_id in pending_connections:
-            logger.info(f"Found existing request for {requester_id} -> {pending_connections[requester_id]}")
-            bot.reply_to(message, "⚠️ شما قبلاً یک درخواست ارسال کرده‌اید!")
-            return
-            
-        # ذخیره درخواست
-        pending_connections[requester_id] = target_id
-        logger.info(f"Added new pending request: {requester_id} -> {target_id}")
-        
-        # ارسال پیام به کاربر هدف
-        keyboard = types.InlineKeyboardMarkup()
-        accept_button = types.InlineKeyboardButton("✅ پذیرش", callback_data="accept_connection")
-        reject_button = types.InlineKeyboardButton("❌ رد", callback_data="reject_connection")
-        keyboard.add(accept_button, reject_button)
-        
-        try:
-            bot.send_message(
-                target_id,
-                "⚡️ درخواستی برای پذیرش یافت شد!",
-                reply_markup=keyboard
-            )
-            bot.reply_to(message, "✅ درخواست شما ارسال شد!")
-            logger.info("Request message sent successfully")
-        except Exception as e:
-            logger.error(f"Error sending request message: {str(e)}")
-            del pending_connections[requester_id]
-            bot.reply_to(message, "❌ خطا در ارسال درخواست! لطفاً دوباره تلاش کنید.")
-            
-    except ValueError:
-        logger.error("Invalid target_id format")
-        bot.reply_to(message, "❌ لینک نامعتبر است!")
-    except Exception as e:
-        logger.error(f"Error in deep linking: {str(e)}")
-        bot.reply_to(message, "❌ خطایی رخ داد! لطفاً دوباره تلاش کنید.")
+        if conn:
+            conn.close()
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
@@ -251,11 +160,11 @@ def handle_callback(call):
         
         if call.data == "accept_connection":
             requester_id = None
-            for req_id, own_id in pending_connections.items():
-                if own_id == user_id:
+            for req_id, owner_id in pending_connections.items():
+                if owner_id == user_id:
                     requester_id = req_id
-                    active_connections[own_id] = {'connected_to': req_id}
-                    active_connections[req_id] = {'connected_to': own_id}
+                    active_connections[owner_id] = {'connected_to': req_id}
+                    active_connections[req_id] = {'connected_to': owner_id}
                     del pending_connections[req_id]
                     break
                 
@@ -288,8 +197,8 @@ def handle_callback(call):
                 
         elif call.data == "reject_connection":
             requester_id = None
-            for req_id, own_id in pending_connections.items():
-                if own_id == user_id:
+            for req_id, owner_id in pending_connections.items():
+                if owner_id == user_id:
                     requester_id = req_id
                     del pending_connections[req_id]
                     break
@@ -390,80 +299,72 @@ def handle_messages(message):
 # Flask route to display user data
 @app.route('/')
 def index():
-    return redirect(url_for('display_users'))
-
-@app.route('/user/<int:telegram_user_id>')
-def user_profile(telegram_user_id):
-    conn, cursor = create_or_connect_database()
-    if not conn or not cursor:
-        return "Database error", 500
-        
-    cursor.execute("SELECT numeric_id, username, telegram_user_id, special_link, created_at FROM users WHERE telegram_user_id = ?", (telegram_user_id,))
-    user = cursor.fetchall()
-    
-    if not user:
-        return "User not found", 404
-        
-    profile_photo_url = get_user_profile_photo(telegram_user_id)
-    return render_template('index.html', users=user, profile_photo_url=profile_photo_url)
+    return render_template('index.html')
 
 @app.route('/users')
-def display_users():
+def user_profile():
     telegram_user_id = request.args.get('telegram_user_id')
-    if telegram_user_id:
-        return redirect(url_for('user_profile', telegram_user_id=telegram_user_id))
-        
+    if not telegram_user_id:
+        return redirect(url_for('index'))
+    
     conn, cursor = create_or_connect_database()
     if not conn or not cursor:
-        return "Database error", 500
-        
-    cursor.execute("SELECT numeric_id, username, telegram_user_id, special_link, created_at FROM users")
-    users = cursor.fetchall()
+        return "Database Error", 500
     
-    if not users:
-        return "No users found", 404
+    try:
+        cursor.execute('SELECT * FROM users WHERE telegram_user_id = ?', (telegram_user_id,))
+        user = cursor.fetchone()
+        if not user:
+            return "User not found", 404
+            
+        return render_template('user_profile.html', user=user)
+    finally:
+        conn.close()
+
+@app.route('/users/all')
+def display_users():
+    conn, cursor = create_or_connect_database()
+    if not conn or not cursor:
+        return "Database Error", 500
+    
+    try:
+        cursor.execute('SELECT * FROM users ORDER BY created_at DESC')
+        users = cursor.fetchall()
         
-    profile_photo_url = get_user_profile_photo(users[0][2])
-    return render_template('index.html', users=users, profile_photo_url=profile_photo_url)
+        user_list = []
+        for user in users:
+            user_dict = {
+                'id': user[0],
+                'numeric_id': user[1],
+                'username': user[2],
+                'telegram_user_id': user[3],
+                'special_link': user[4],
+                'created_at': user[5],
+                'profile_photo': get_user_profile_photo(user[3])
+            }
+            user_list.append(user_dict)
+            
+        return {'users': user_list}
+    finally:
+        conn.close()
 
 # Flask webhook route
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    logger = logging.getLogger(__name__)
-    logger.debug("Received webhook request")
-    try:
-        json_data = request.get_json(force=True)
-        logger.debug(f"Webhook data: {json_data}")
-        update = telebot.types.Update.de_json(json_data)
-        bot.process_new_updates([update])
-        return 'ok'
-    except Exception as e:
-        logger.error(f"Error in webhook: {e}")
-        return str(e), 500
+@bot.message_handler(func=lambda message: True)
+def echo_all(message):
+    bot.reply_to(message, message.text)
 
-# Start the Flask app
 if __name__ == "__main__":
-    # تنظیمات لاگینگ
-    logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO,
-        handlers=[
-            logging.FileHandler(BASE_PATH / 'app.log'),
-            logging.StreamHandler()
-        ]
-    )
+    # Set up logging
+    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
     logger = logging.getLogger(__name__)
-    logger.info("Starting bot...")
     
-    # اطمینان از وجود دیتابیس
-    conn, cursor = create_or_connect_database()
-    if conn and cursor:
-        conn.close()
+    # Create database tables
+    create_or_connect_database()
     
-    # اجرای سرور
-    app.run(
-        host='0.0.0.0',
-        port=int(os.getenv('PORT', 5000)),
-        debug=False,
-        threaded=True
-    )
+    # Start bot polling in a separate thread
+    import threading
+    bot_thread = threading.Thread(target=bot.polling, kwargs={'none_stop': True})
+    bot_thread.start()
+    
+    # Run Flask app
+    app.run(host='0.0.0.0', port=5000)
