@@ -1,3 +1,4 @@
+import logging
 from flask import Flask, request, render_template, redirect, url_for
 import telebot
 from telebot import types
@@ -7,11 +8,14 @@ import random
 import string
 from collections import defaultdict
 import asyncio
-import logging
 import requests
 from pathlib import Path
 import time
 import threading
+
+# Configure logging at the beginning of the file
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # تنظیمات اصلی
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -40,8 +44,10 @@ def ensure_directory_exists():
         print(f"خطای دایرکتوری: {e}")
         return False
 
+# Improved error handling and logging for database connection
 def create_or_connect_database():
     if not ensure_directory_exists():
+        logger.error("Failed to ensure directory exists.")
         return None, None
 
     try:
@@ -61,9 +67,13 @@ def create_or_connect_database():
                 )
             ''')
             conn.commit()
+        logger.info("Database connected successfully.")
         return conn, cursor
+    except sqlite3.Error as e:
+        logger.error(f"Database error: {e}")
+        return None, None
     except Exception as e:
-        print(f"خطای پایگاه داده: {e}")
+        logger.error(f"Unexpected error: {e}")
         return None, None
 
 def generate_unique_link():
@@ -89,6 +99,7 @@ def create_web_app_button(user_id):
     keyboard.add(web_app_button)
     return keyboard
 
+# Example of adding timeout to a network request
 def get_user_profile_photo(user_id):
     try:
         user_profile_photos = bot.get_user_profile_photos(user_id)
@@ -99,8 +110,11 @@ def get_user_profile_photo(user_id):
             return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
         else:
             return "https://via.placeholder.com/150"
+    except requests.exceptions.Timeout:
+        logger.error("Request timed out")
+        return "https://via.placeholder.com/150"
     except Exception as e:
-        print(f"خطا در دریافت عکس پروفایل: {e}")
+        logger.error(f"Error fetching user profile photo: {e}")
         return "https://via.placeholder.com/150"
 
 @bot.message_handler(commands=['start'])
@@ -375,8 +389,6 @@ def webhook():
 
 # Start the Flask app
 if __name__ == "__main__":
-    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-    logger = logging.getLogger(__name__)
     logger.info("Starting bot...")
     
     # اطمینان از وجود دایرکتوری‌ها
