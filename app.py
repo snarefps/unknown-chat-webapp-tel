@@ -35,9 +35,12 @@ app = Flask(__name__)
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_PATH, 'user_database.db')
 
-# ذخیره وضعیت چت‌ها
+# ذخیره وضعیت چت‌ها در حافظه
 active_connections = {}
 pending_connections = {}
+
+# قفل برای مدیریت همزمانی
+chat_lock = threading.Lock()
 
 def ensure_directory_exists():
     try:
@@ -99,19 +102,39 @@ def handle_start(message):
             owner = cursor.fetchone()
             
             if owner:
-                if owner[0] == message.from_user.id:
-                    logger.warning(f"User {message.from_user.id} tried to chat with themselves")
+                owner_id = owner[0]
+                user_id = message.from_user.id
+                
+                if owner_id == user_id:
+                    logger.warning(f"User {user_id} tried to chat with themselves")
                     bot.reply_to(message, "⚠️ شما نمی‌توانید با خودتان چت کنید!")
                     return
+                
+                with chat_lock:
+                    # بررسی اینکه آیا کاربر در چت فعال یا درخواست معلق است
+                    if (user_id in active_connections or 
+                        owner_id in active_connections or 
+                        user_id in pending_connections.values() or 
+                        owner_id in pending_connections.values()):
+                        logger.warning(f"User {user_id} or {owner_id} already in chat or has pending request")
+                        bot.reply_to(message, "⚠️ شما یا کاربر مقصد در حال حاضر در چت هستید!")
+                        return
                     
-                logger.info(f"Creating chat request from {message.from_user.id} to {owner[0]}")
-                pending_connections[message.from_user.id] = owner[0]
-                bot.send_message(
-                    owner[0],
-                    f"✨ درخواست چت جدید!\n\n👤 کاربر {message.from_user.username or 'ناشناس'} می‌خواهد با شما گفتگو کند.",
-                    reply_markup=create_connection_buttons()
-                )
-                bot.reply_to(message, "🌟 درخواست چت شما ارسال شد!\n\n⏳ لطفاً منتظر پاسخ بمانید...")
+                    # اضافه کردن درخواست جدید
+                    pending_connections[user_id] = owner_id
+                    logger.info(f"Added pending connection: {user_id} -> {owner_id}")
+                    
+                    try:
+                        bot.send_message(
+                            owner_id,
+                            f"✨ درخواست چت جدید!\n\n👤 کاربر {message.from_user.username or 'ناشناس'} می‌خواهد با شما گفتگو کند.",
+                            reply_markup=create_connection_buttons()
+                        )
+                        bot.reply_to(message, "🌟 درخواست چت شما ارسال شد!\n\n⏳ لطفاً منتظر پاسخ بمانید...")
+                    except Exception as e:
+                        logger.error(f"Error sending chat request messages: {e}")
+                        del pending_connections[user_id]
+                        bot.reply_to(message, "خطا در ارسال درخواست. لطفاً دوباره تلاش کنید.")
             else:
                 logger.warning(f"Invalid special link used: {special_link}")
                 bot.reply_to(message, "⚠️ لینک نامعتبر است.")
