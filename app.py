@@ -331,55 +331,53 @@ def handle_callback(call):
                 logger.info(f"Connected users. Active connections: {connections.active_connections}")
                 
                 try:
-                    # ارسال پیام به درخواست‌دهنده
-                    bot.send_message(
+                    # پیام و دکمه برای درخواست‌دهنده
+                    disconnect_msg = bot.send_message(
                         requester_id,
-                        "✨ درخواست چت شما پذیرفته شد!\n\n💭 حالا می‌توانید پیام‌های خود را ارسال کنید.",
+                        "✨ درخواست چت شما پذیرفته شد!\n\n💭 حالا می‌توانید پیام‌های خود را ارسال کنید.\n\n⚠️ برای قطع ارتباط از دکمه زیر استفاده کنید:",
                         reply_markup=create_disconnect_button()
                     )
+                    bot.pin_chat_message(requester_id, disconnect_msg.message_id)
                     
-                    # ارسال پیام به پذیرنده
-                    bot.send_message(
+                    # پیام و دکمه برای پذیرنده
+                    disconnect_msg = bot.send_message(
                         user_id,
-                        "🤝 شما درخواست چت را پذیرفتید!\n\n💭 حالا می‌توانید پیام‌های خود را ارسال کنید.",
+                        "🤝 شما درخواست چت را پذیرفتید!\n\n💭 حالا می‌توانید پیام‌های خود را ارسال کنید.\n\n⚠️ برای قطع ارتباط از دکمه زیر استفاده کنید:",
                         reply_markup=create_disconnect_button()
                     )
+                    bot.pin_chat_message(user_id, disconnect_msg.message_id)
                     
-                    logger.info(f"Connection established between {user_id} and {requester_id}")
+                    logger.info("Successfully sent confirmation messages to both users")
                     
                 except Exception as e:
                     logger.error(f"Error sending confirmation messages: {str(e)}")
-                    connections.disconnect_users(user_id)  # در صورت خطا اتصال رو قطع می‌کنیم
-                    bot.send_message(user_id, "❌ خطا در برقراری ارتباط! لطفاً دوباره تلاش کنید.")
+                    bot.answer_callback_query(call.id, "❌ خطا در برقراری ارتباط!")
+                    connections.disconnect_users(user_id)
             else:
-                logger.warning(f"No pending request found for user {user_id}")
-                bot.answer_callback_query(call.id, "❌ درخواستی یافت نشد")
-                bot.send_message(user_id, "⚠️ درخواستی برای پذیرش یافت نشد!")
+                bot.answer_callback_query(call.id, "⚠️ درخواست چت معتبر نیست!")
                 
         elif call.data == "reject_connection":
-            bot.answer_callback_query(call.id, "❌ درخواست رد شد")
-            requester_id = connections.get_pending_owner(user_id)
-            
+            requester_id = connections.find_pending_request(user_id)
             if requester_id:
                 connections.remove_pending(requester_id)
-                bot.send_message(requester_id, "😔 متأسفانه درخواست چت شما پذیرفته نشد.\n\n✨ می‌توانید با کاربران دیگر گفتگو کنید!")
-                bot.edit_message_text(
-                    "🚫 شما این درخواست چت را رد کردید.",
-                    call.message.chat.id,
-                    call.message.message_id
-                )
+                bot.answer_callback_query(call.id, "❌ درخواست رد شد")
+                bot.send_message(requester_id, "❌ متأسفانه درخواست چت شما رد شد.")
+                bot.send_message(user_id, "✅ درخواست چت با موفقیت رد شد.")
+            else:
+                bot.answer_callback_query(call.id, "⚠️ درخواست چت معتبر نیست!")
                 
         elif call.data == "disconnect":
-            bot.answer_callback_query(call.id, "❌ قطع ارتباط")
             other_user = connections.disconnect_users(user_id)
-            
             if other_user:
-                bot.send_message(user_id, "❌ چت پایان یافت!\n\n🌟 امیدواریم از این گفتگو لذت برده باشید.\n✨ می‌توانید دوباره با کاربران دیگر چت کنید!")
-                bot.send_message(other_user, "❌ کاربر مقابل چت را پایان داد.\n\n🌟 امیدواریم از این گفتگو لذت برده باشید.\n✨ می‌توانید دوباره با کاربران دیگر چت کنید!")
+                bot.answer_callback_query(call.id, "✅ ارتباط قطع شد")
+                bot.send_message(user_id, "✅ ارتباط با موفقیت قطع شد.")
+                bot.send_message(other_user, "⚠️ کاربر مقابل ارتباط را قطع کرد.")
+            else:
+                bot.answer_callback_query(call.id, "⚠️ شما در چت نیستید!")
                 
     except Exception as e:
         logger.error(f"Error in callback handler: {str(e)}")
-        bot.answer_callback_query(call.id, "❌ متأسفانه مشکلی پیش آمده! لطفاً دوباره تلاش کنید.")
+        bot.answer_callback_query(call.id, "❌ خطایی رخ داد! لطفاً دوباره تلاش کنید.")
 
 @bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'video_note', 'sticker', 'animation'])
 def handle_messages(message):
