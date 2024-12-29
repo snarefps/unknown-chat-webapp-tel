@@ -331,18 +331,32 @@ def handle_callback(call):
                 
                 try:
                     # ارسال پیام به درخواست‌دهنده
-                    bot.send_message(
+                    requester_message = bot.send_message(
                         requester_id,
-                        "✨ درخواست چت شما پذیرفته شد!\n\n💭 حالا می‌توانید پیام‌های خود را ارسال کنید.",
+                        """✨ درخواست چت شما پذیرفته شد!
+
+💭 حالا می‌توانید پیام‌های خود را ارسال کنید.
+
+❤️ امیدواریم گفتگوی خوبی داشته باشید!
+
+⚠️ برای قطع ارتباط از دکمه زیر استفاده کنید:""",
                         reply_markup=create_disconnect_button()
                     )
+                    bot.pin_chat_message(requester_id, requester_message.message_id)
                     
                     # ارسال پیام به پذیرنده
-                    bot.send_message(
+                    owner_message = bot.send_message(
                         user_id,
-                        "🤝 شما درخواست چت را پذیرفتید!\n\n💭 حالا می‌توانید پیام‌های خود را ارسال کنید.",
+                        """🤝 شما درخواست چت را پذیرفتید!
+
+💭 حالا می‌توانید پیام‌های خود را ارسال کنید.
+
+❤️ امیدواریم گفتگوی خوبی داشته باشید!
+
+⚠️ برای قطع ارتباط از دکمه زیر استفاده کنید:""",
                         reply_markup=create_disconnect_button()
                     )
+                    bot.pin_chat_message(user_id, owner_message.message_id)
                     
                     logger.info(f"Connection established between {user_id} and {requester_id}")
                     
@@ -357,7 +371,7 @@ def handle_callback(call):
                 
         elif call.data == "reject_connection":
             bot.answer_callback_query(call.id, "❌ درخواست رد شد")
-            requester_id = connections.get_pending_owner(user_id)
+            requester_id = connections.find_pending_request(user_id)
             
             if requester_id:
                 connections.remove_pending(requester_id)
@@ -369,12 +383,32 @@ def handle_callback(call):
                 )
                 
         elif call.data == "disconnect":
-            bot.answer_callback_query(call.id, "❌ قطع ارتباط")
-            other_user = connections.disconnect_users(user_id)
-            
+            other_user = connections.get_connected_user(user_id)
             if other_user:
-                bot.send_message(user_id, "❌ چت پایان یافت!\n\n🌟 امیدواریم از این گفتگو لذت برده باشید.\n✨ می‌توانید دوباره با کاربران دیگر چت کنید!")
-                bot.send_message(other_user, "❌ کاربر مقابل چت را پایان داد.\n\n🌟 امیدواریم از این گفتگو لذت برده باشید.\n✨ می‌توانید دوباره با کاربران دیگر چت کنید!")
+                try:
+                    # حذف پین‌های قبلی
+                    bot.unpin_all_chat_messages(user_id)
+                    bot.unpin_all_chat_messages(other_user)
+                except Exception as e:
+                    logger.error(f"Error unpinning messages: {str(e)}")
+
+                # قطع ارتباط
+                connections.disconnect_users(user_id)
+                
+                # ارسال پیام به هر دو کاربر
+                bot.send_message(user_id, """❌ چت پایان یافت!
+
+🌟 امیدواریم از این گفتگو لذت برده باشید.
+✨ می‌توانید دوباره با کاربران دیگر چت کنید!""")
+                
+                bot.send_message(other_user, """❌ کاربر مقابل چت را پایان داد.
+
+🌟 امیدواریم از این گفتگو لذت برده باشید.
+✨ می‌توانید دوباره با کاربران دیگر چت کنید!""")
+                
+                logger.info(f"Disconnected users {user_id} and {other_user}")
+            else:
+                bot.answer_callback_query(call.id, "⚠️ شما به کسی متصل نیستید")
                 
     except Exception as e:
         logger.error(f"Error in callback handler: {str(e)}")
