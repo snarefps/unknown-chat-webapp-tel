@@ -382,57 +382,58 @@ def handle_callback(call):
 
 @bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'video_note', 'sticker', 'animation'])
 def handle_messages(message):
-    logger = logging.getLogger(__name__)
     user_id = message.from_user.id
+    other_user = connections.get_connected_user(user_id)
     
-    try:
-        # بررسی اتصال کاربر
-        other_user = connections.get_connected_user(user_id)
-        
-        if other_user:
-            logger.info(f"Sending message from {user_id} to {other_user}")
+    if other_user:
+        try:
+            # ارسال متن
+            if message.text:
+                bot.send_message(other_user, f"💬 پیام جدید:\n{message.text}")
             
-            try:
-                if message.text:
-                    bot.send_message(other_user, f"💬 پیام جدید:\n{message.text}")
-                elif message.photo:
-                    caption = message.caption if message.caption else ""
-                    bot.send_photo(other_user, message.photo[-1].file_id, caption=f"🖼️ تصویر جدید:\n{caption}")
-                elif message.video:
-                    caption = message.caption if message.caption else ""
-                    bot.send_video(other_user, message.video.file_id, caption=f"🎥 ویدیو جدید:\n{caption}")
-                elif message.document:
-                    caption = message.caption if message.caption else ""
-                    bot.send_document(other_user, message.document.file_id, caption=f"📎 فایل جدید:\n{caption}")
-                elif message.audio:
-                    caption = message.caption if message.caption else ""
-                    bot.send_audio(other_user, message.audio.file_id, caption=f"🎵 موزیک جدید:\n{caption}")
-                elif message.voice:
-                    caption = message.caption if message.caption else ""
-                    bot.send_voice(other_user, message.voice.file_id, caption=f"🎤 پیام صوتی جدید:\n{caption}")
-                elif message.video_note:
-                    bot.send_video_note(other_user, message.video_note.file_id)
-                elif message.sticker:
-                    bot.send_sticker(other_user, message.sticker.file_id)
-                elif message.animation:
-                    caption = message.caption if message.caption else ""
-                    bot.send_animation(other_user, message.animation.file_id, caption=f"✨ گیف جدید:\n{caption}")
-                
-            except Exception as e:
-                logger.error(f"Error sending message: {str(e)}")
-                bot.reply_to(message, "❌ خطا در ارسال پیام! لطفاً دوباره تلاش کنید.")
-                
-        else:
-            bot.reply_to(message, """📝 برای شروع چت:
-
-1️⃣ لینک اختصاصی خود را با دوستانتان به اشتراک بگذارید
-2️⃣ یا از لینک دوستانتان استفاده کنید
-
-✨ همین حالا چت را شروع کنید!""")
+            # ارسال عکس
+            elif message.photo:
+                caption = message.caption if message.caption else ""
+                bot.send_photo(other_user, message.photo[-1].file_id, caption=f"🖼️ تصویر جدید:\n{caption}")
             
-    except Exception as e:
-        logger.error(f"Error in handle_messages: {str(e)}")
-        bot.reply_to(message, "❌ خطایی رخ داد! لطفاً دوباره تلاش کنید.")
+            # ارسال ویدیو
+            elif message.video:
+                caption = message.caption if message.caption else ""
+                bot.send_video(other_user, message.video.file_id, caption=f"🎥 ویدیو جدید:\n{caption}")
+            
+            # ارسال فایل
+            elif message.document:
+                caption = message.caption if message.caption else ""
+                bot.send_document(other_user, message.document.file_id, caption=f"📎 فایل جدید:\n{caption}")
+            
+            # ارسال صوت
+            elif message.audio:
+                caption = message.caption if message.caption else ""
+                bot.send_audio(other_user, message.audio.file_id, caption=f"🎵 موزیک جدید:\n{caption}")
+            
+            # ارسال ویس
+            elif message.voice:
+                caption = message.caption if message.caption else ""
+                bot.send_voice(other_user, message.voice.file_id, caption=f"🎤 پیام صوتی جدید:\n{caption}")
+            
+            # ارسال ویدیو نوت
+            elif message.video_note:
+                bot.send_video_note(other_user, message.video_note.file_id)
+            
+            # ارسال استیکر
+            elif message.sticker:
+                bot.send_sticker(other_user, message.sticker.file_id)
+            
+            # ارسال گیف
+            elif message.animation:
+                caption = message.caption if message.caption else ""
+                bot.send_animation(other_user, message.animation.file_id, caption=f"✨ گیف جدید:\n{caption}")
+            
+        except Exception as e:
+            print(f"خطا در ارسال پیام: {e}")
+            bot.send_message(message.chat.id, "❌ خطا در ارسال پیام! لطفاً دوباره تلاش کنید.")
+    else:
+        bot.reply_to(message, "⚠️ شما به کسی متصل نیستید. برای اتصال به یک کاربر، از دکمه‌های موجود استفاده کنید.")
 
 # Flask route to display user data
 @app.route('/')
