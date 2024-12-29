@@ -1,429 +1,250 @@
-from flask import Flask, request, render_template, redirect, url_for
+from flask import Flask, request, render_template
 import telebot
 from telebot import types
 import sqlite3
 import os
 import random
 import string
-from collections import defaultdict
-import asyncio
 import logging
-import requests
-from pathlib import Path
-import time
 import threading
+import time
+from datetime import datetime
 
 # تنظیمات اصلی
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 BOT_USERNAME = os.getenv('BOT_USERNAME')
 DOMAIN = os.getenv('DOMAIN', 'https://your-domain.com')
+
+# ایجاد نمونه‌های اصلی
 bot = telebot.TeleBot(BOT_TOKEN)
-
-# تنظیمات Flask
-app = Flask(__name__, template_folder='templates', static_folder='static')
+app = Flask(__name__)
 app.config['SECRET_KEY'] = os.urandom(24)
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
-# تنظیمات مسیرها و دیتابیس
-BASE_PATH = '/opt/telegram-webapp'
-DB_PATH = os.path.join(BASE_PATH, 'user_database.db')
+# مسیر دیتابیس
+DB_PATH = 'user_database.db'
 
-# Store active connections and pending requests with timeout
-active_connections = defaultdict(lambda: {'timestamp': None, 'data': {}})
-pending_connections = defaultdict(lambda: {'timestamp': None, 'data': {}})
-CONNECTION_TIMEOUT = 3600  # 1 hour timeout
-
-def ensure_directory_exists():
-    try:
-        os.makedirs(BASE_PATH, exist_ok=True)
-        return True
-    except Exception as e:
-        print(f"خطای دایرکتوری: {e}")
+# ساختارهای داده برای مدیریت چت
+class ChatManager:
+    def __init__(self):
+        self.active_chats = {}  # {user_id: {'partner_id': id, 'last_activity': timestamp}}
+        self.pending_requests = {}  # {from_id: to_id}
+        self.lock = threading.Lock()
+    
+    def add_pending_request(self, from_id, to_id):
+        with self.lock:
+            if from_id not in self.active_chats and to_id not in self.active_chats:
+                self.pending_requests[from_id] = to_id
+                return True
         return False
+    
+    def accept_request(self, from_id, to_id):
+        with self.lock:
+            if from_id in self.pending_requests and self.pending_requests[from_id] == to_id:
+                current_time = time.time()
+                self.active_chats[from_id] = {'partner_id': to_id, 'last_activity': current_time}
+                self.active_chats[to_id] = {'partner_id': from_id, 'last_activity': current_time}
+                del self.pending_requests[from_id]
+                return True
+        return False
+    
+    def end_chat(self, user_id):
+        with self.lock:
+            if user_id in self.active_chats:
+                partner_id = self.active_chats[user_id]['partner_id']
+                if partner_id in self.active_chats:
+                    del self.active_chats[partner_id]
+                del self.active_chats[user_id]
+                return partner_id
+        return None
+    
+    def update_activity(self, user_id):
+        with self.lock:
+            if user_id in self.active_chats:
+                self.active_chats[user_id]['last_activity'] = time.time()
+                partner_id = self.active_chats[user_id]['partner_id']
+                self.active_chats[partner_id]['last_activity'] = time.time()
 
-def create_or_connect_database():
-    if not ensure_directory_exists():
-        return None, None
+    def get_chat_partner(self, user_id):
+        return self.active_chats.get(user_id, {}).get('partner_id')
 
-    try:
-        database_exists = os.path.exists(DB_PATH)
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        cursor = conn.cursor()
-        
-        if not database_exists:
-            cursor.execute('''
-                CREATE TABLE users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    numeric_id INTEGER UNIQUE,
-                    username TEXT,
-                    telegram_user_id INTEGER UNIQUE,
-                    special_link TEXT UNIQUE,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            conn.commit()
-        return conn, cursor
-    except Exception as e:
-        print(f"خطای پایگاه داده: {e}")
-        return None, None
+    def is_user_in_chat(self, user_id):
+        return user_id in self.active_chats
 
-def generate_unique_link():
+chat_manager = ChatManager()
+
+# دیتابیس
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  telegram_id INTEGER UNIQUE,
+                  username TEXT,
+                  special_link TEXT UNIQUE,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    conn.commit()
+    conn.close()
+
+def generate_special_link():
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
 
-def create_connection_buttons():
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    accept_btn = types.InlineKeyboardButton("✅ قبول", callback_data='accept_connection')
-    reject_btn = types.InlineKeyboardButton("❌ رد", callback_data='reject_connection')
-    markup.add(accept_btn, reject_btn)
-    return markup
-
-def create_disconnect_button():
-    keyboard = types.InlineKeyboardMarkup()
-    disconnect_btn = types.InlineKeyboardButton("❌ قطع ارتباط", callback_data="disconnect")
-    keyboard.add(disconnect_btn)
-    return keyboard
-
-def create_web_app_button(user_id):
-    keyboard = types.InlineKeyboardMarkup()
-    web_app_info = types.WebAppInfo(url=f"https://chatbot.smart-flow.com.tr/users?telegram_user_id={user_id}")
-    web_app_button = types.InlineKeyboardButton(text="🌐 باز کردن وب اپلیکیشن", web_app=web_app_info)
-    keyboard.add(web_app_button)
-    return keyboard
-
-def get_user_profile_photo(user_id):
+def register_user(telegram_id, username):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
     try:
-        user_profile_photos = bot.get_user_profile_photos(user_id)
-        if user_profile_photos.total_count > 0:
-            file_id = user_profile_photos.photos[0][0].file_id
-            file_info = bot.get_file(file_id)
-            file_path = file_info.file_path
-            return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-        else:
-            return "https://via.placeholder.com/150"
-    except Exception as e:
-        print(f"خطا در دریافت عکس پروفایل: {e}")
-        return "https://via.placeholder.com/150"
-
-def cleanup_old_connections():
-    current_time = time.time()
-    for user_id in list(active_connections.keys()):
-        if active_connections[user_id]['timestamp'] and current_time - active_connections[user_id]['timestamp'] > CONNECTION_TIMEOUT:
-            del active_connections[user_id]
-    
-    for user_id in list(pending_connections.keys()):
-        if pending_connections[user_id]['timestamp'] and current_time - pending_connections[user_id]['timestamp'] > 300:  # 5 minutes for pending
-            del pending_connections[user_id]
-
-def update_connection_timestamp(user_id, is_pending=False):
-    if is_pending:
-        pending_connections[user_id]['timestamp'] = time.time()
-    else:
-        active_connections[user_id]['timestamp'] = time.time()
-
-@bot.message_handler(commands=['start'])
-def handle_start(message):
-    try:
-        conn, cursor = create_or_connect_database()
-        if not conn or not cursor:
-            bot.reply_to(message, "خطای سیستم. لطفا بعدا دوباره تلاش کنید.")
-            return
-
-        # پردازش پارامتر start
-        if len(message.text.split()) > 1:
-            special_link = message.text.split()[1]
-            cursor.execute("SELECT telegram_user_id FROM users WHERE special_link = ?", (special_link,))
-            owner = cursor.fetchone()
-            
-            if owner:
-                # بررسی ارتباط با خود
-                if owner[0] == message.from_user.id:
-                    bot.reply_to(message, "⚠️ شما نمی‌توانید با خودتان چت کنید!")
-                    return
-                    
-                pending_connections[message.from_user.id] = {'timestamp': time.time(), 'data': {'owner_id': owner[0]}}
-                bot.send_message(
-                    owner[0],
-                    f"✨ درخواست چت جدید!\n\n👤 کاربر {message.from_user.username or 'ناشناس'} می‌خواهد با شما گفتگو کند.\n\n🤝 مایل به برقراری ارتباط هستید؟",
-                    reply_markup=create_connection_buttons()
-                )
-                bot.reply_to(message, "🌟 درخواست چت شما ارسال شد!\n\n⏳ لطفاً منتظر پاسخ بمانید...", reply_markup=create_web_app_button(message.from_user.id))
-            else:
-                bot.reply_to(message, "⚠️ اوه! لینک ارتباطی که استفاده کردید معتبر نیست.\n\n🔄 لطفاً دوباره تلاش کنید.", reply_markup=create_web_app_button(message.from_user.id))
-        else:
-            # ثبت نام کاربر جدید
-            cursor.execute("SELECT * FROM users WHERE telegram_user_id = ?", (message.from_user.id,))
-            existing_user = cursor.fetchone()
-            
-            if existing_user:
-                bot.reply_to(
-                    message, 
-                    f"""🎉 خوش برگشتید {message.from_user.first_name} عزیز!
-
-🔗 لینک اختصاصی شما:
-t.me/{bot.get_me().username}?start={existing_user[4]}
-
-💫 با اشتراک‌گذاری این لینک، دوستانتان می‌توانند مستقیماً با شما چت کنند!""",
-                    reply_markup=create_web_app_button(message.from_user.id)
-                )
-            else:
-                numeric_id = random.randint(10000, 99999)
-                special_link = generate_unique_link()
-                
-                cursor.execute(
-                    "INSERT INTO users (numeric_id, username, telegram_user_id, special_link) VALUES (?, ?, ?, ?)",
-                    (numeric_id, message.from_user.username, message.from_user.id, special_link)
-                )
-                conn.commit()
-                
-                welcome_msg = f"""
-🎈 {message.from_user.first_name} عزیز، به ربات ما خوش آمدید!
-
-📝 اطلاعات پروفایل شما:
-🔢 شناسه: {numeric_id}
-🔗 لینک اختصاصی شما: 
-t.me/{bot.get_me().username}?start={special_link}
-
-✨ با اشتراک‌گذاری لینک اختصاصی خود، دوستانتان می‌توانند مستقیماً با شما چت کنند!
-                """
-                bot.reply_to(message, welcome_msg, reply_markup=create_web_app_button(message.from_user.id))
-
-    except Exception as e:
-        print(f"خطا در هندلر شروع: {e}")
-        bot.reply_to(message, "❌ متأسفانه مشکلی پیش آمده!\n\n🔄 لطفاً چند لحظه دیگر دوباره تلاش کنید.", reply_markup=create_web_app_button(message.from_user.id))
+        special_link = generate_special_link()
+        c.execute('INSERT OR IGNORE INTO users (telegram_id, username, special_link) VALUES (?, ?, ?)',
+                 (telegram_id, username, special_link))
+        conn.commit()
+        return special_link
     finally:
         conn.close()
 
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callback(call):
+def get_user_by_link(special_link):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
     try:
-        cleanup_old_connections()
-        user_id = call.from_user.id
+        c.execute('SELECT telegram_id FROM users WHERE special_link = ?', (special_link,))
+        result = c.fetchone()
+        return result[0] if result else None
+    finally:
+        conn.close()
+
+# کیبوردها
+def create_chat_keyboard():
+    keyboard = types.InlineKeyboardMarkup()
+    disconnect_btn = types.InlineKeyboardButton("❌ پایان چت", callback_data="end_chat")
+    keyboard.add(disconnect_btn)
+    return keyboard
+
+def create_request_keyboard():
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    accept_btn = types.InlineKeyboardButton("✅ قبول", callback_data="accept_chat")
+    reject_btn = types.InlineKeyboardButton("❌ رد", callback_data="reject_chat")
+    keyboard.add(accept_btn, reject_btn)
+    return keyboard
+
+# دستورات ربات
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_id = message.from_user.id
+    username = message.from_user.username or "بدون نام کاربری"
+    
+    special_link = register_user(user_id, username)
+    
+    if len(message.text.split()) > 1:
+        # اگر لینک دعوت داشته باشد
+        invite_code = message.text.split()[1]
+        target_id = get_user_by_link(invite_code)
         
-        if call.data == "accept_connection":
-            if user_id in pending_connections:
-                update_connection_timestamp(user_id)
-                active_connections[user_id] = pending_connections[user_id]
-                del pending_connections[user_id]
-                bot.answer_callback_query(call.id, "ارتباط برقرار شد!")
-                bot.edit_message_text(
-                    "✅ ارتباط برقرار شد. برای قطع ارتباط از دکمه زیر استفاده کنید.",
-                    call.message.chat.id,
-                    call.message.message_id,
-                    reply_markup=create_disconnect_button()
-                )
-                
-                requester_id = active_connections[user_id]['data']['owner_id']
-                disconnect_message = bot.send_message(
-                    requester_id,
-                    """✨ درخواست چت شما پذیرفته شد!
-
-💭 حالا می‌توانید پیام‌های خود را ارسال کنید.
-
-❤️ امیدواریم گفتگوی خوبی داشته باشید!
-
-⚠️ برای قطع ارتباط از دکمه زیر استفاده کنید:""",
-                    reply_markup=create_disconnect_button()
-                )
-                bot.pin_chat_message(requester_id, disconnect_message.message_id)
-                
-                owner_disconnect_message = bot.send_message(
-                    user_id,
-                    """🤝 شما درخواست چت را پذیرفتید!
-
-💭 حالا می‌توانید پیام‌های خود را ارسال کنید.
-
-❤️ امیدواریم گفتگوی خوبی داشته باشید!
-
-⚠️ برای قطع ارتباط از دکمه زیر استفاده کنید:""",
-                    reply_markup=create_disconnect_button()
-                )
-                bot.pin_chat_message(user_id, owner_disconnect_message.message_id)
-                
-        elif call.data == "reject_connection":
-            requester_id = None
-            for req_id, owner_id in pending_connections.items():
-                if owner_id['data']['owner_id'] == user_id:
-                    requester_id = req_id
-                    del pending_connections[req_id]
-                    break
-            
-            if requester_id:
-                bot.send_message(requester_id, "😔 متأسفانه درخواست چت شما پذیرفته نشد.\n\n✨ می‌توانید با کاربران دیگر گفتگو کنید!")
-                bot.edit_message_text(
-                    "🚫 شما این درخواست چت را رد کردید.",
-                    call.message.chat.id,
-                    call.message.message_id
-                )
-                
-        elif call.data == "disconnect":
-            if user_id in active_connections:
-                other_user = active_connections[user_id]['data']['owner_id']
-                if other_user:
-                    try:
-                        bot.unpin_all_chat_messages(user_id)
-                        bot.unpin_all_chat_messages(other_user)
-                    except:
-                        pass
-
-                    bot.send_message(user_id, """❌ چت پایان یافت!
-
-🌟 امیدواریم از این گفتگو لذت برده باشید.
-✨ می‌توانید دوباره با کاربران دیگر چت کنید!""")
-                    bot.send_message(other_user, """❌ کاربر مقابل چت را پایان داد.
-
-🌟 امیدواریم از این گفتگو لذت برده باشید.
-✨ می‌توانید دوباره با کاربران دیگر چت کنید!""")
-                    
-                    del active_connections[user_id]
-                    del active_connections[other_user]
-                    
-    except Exception as e:
-        print(f"خطا در هندلر کال‌بک: {e}")
-        bot.answer_callback_query(call.id, "❌ متأسفانه مشکلی پیش آمده! لطفاً دوباره تلاش کنید.")
-
-@bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'video_note', 'sticker', 'animation'])
-def handle_messages(message):
-    if message.from_user.id in active_connections:
-        other_user = active_connections[message.from_user.id]['data']['owner_id']
-        if other_user:
-            try:
-                # ارسال متن
-                if message.text:
-                    bot.send_message(other_user, f"💬 پیام جدید:\n{message.text}")
-                
-                # ارسال عکس
-                elif message.photo:
-                    caption = message.caption if message.caption else ""
-                    bot.send_photo(other_user, message.photo[-1].file_id, caption=f"🖼️ تصویر جدید:\n{caption}")
-                
-                # ارسال ویدیو
-                elif message.video:
-                    caption = message.caption if message.caption else ""
-                    bot.send_video(other_user, message.video.file_id, caption=f"🎥 ویدیو جدید:\n{caption}")
-                
-                # ارسال فایل
-                elif message.document:
-                    caption = message.caption if message.caption else ""
-                    bot.send_document(other_user, message.document.file_id, caption=f"📎 فایل جدید:\n{caption}")
-                
-                # ارسال صوت
-                elif message.audio:
-                    caption = message.caption if message.caption else ""
-                    bot.send_audio(other_user, message.audio.file_id, caption=f"🎵 موزیک جدید:\n{caption}")
-                
-                # ارسال ویس
-                elif message.voice:
-                    caption = message.caption if message.caption else ""
-                    bot.send_voice(other_user, message.voice.file_id, caption=f"🎤 پیام صوتی جدید:\n{caption}")
-                
-                # ارسال ویدیو نوت
-                elif message.video_note:
-                    bot.send_video_note(other_user, message.video_note.file_id)
-                
-                # ارسال استیکر
-                elif message.sticker:
-                    bot.send_sticker(other_user, message.sticker.file_id)
-                
-                # ارسال گیف
-                elif message.animation:
-                    caption = message.caption if message.caption else ""
-                    bot.send_animation(other_user, message.animation.file_id, caption=f"✨ گیف جدید:\n{caption}")
-                
-            except Exception as e:
-                print(f"خطا در ارسال پیام: {e}")
-                bot.send_message(message.chat.id, "❌ خطا در ارسال پیام! لطفاً دوباره تلاش کنید.")
+        if target_id and target_id != user_id:
+            if chat_manager.add_pending_request(user_id, target_id):
+                bot.send_message(target_id,
+                               f"درخواست چت جدید از طرف {username}!",
+                               reply_markup=create_request_keyboard())
+                bot.reply_to(message, "درخواست چت ارسال شد. لطفاً منتظر پاسخ بمانید.")
+            else:
+                bot.reply_to(message, "امکان برقراری چت وجود ندارد. لطفاً بعداً تلاش کنید.")
+        else:
+            bot.reply_to(message, "لینک نامعتبر است.")
     else:
-        bot.reply_to(message, """📝 برای شروع چت:
+        welcome_text = f"""
+سلام! به ربات چت ناشناس خوش آمدید.
+لینک اختصاصی شما:
+{DOMAIN}/start?start={special_link}
+این لینک را برای شروع چت به دیگران بدهید.
+"""
+        bot.reply_to(message, welcome_text)
 
-1️⃣ لینک اختصاصی خود را با دوستانتان به اشتراک بگذارید
-2️⃣ یا از لینک دوستانتان استفاده کنید
+@bot.callback_query_handler(func=lambda call: True)
+def handle_query(call):
+    user_id = call.from_user.id
+    
+    if call.data == "accept_chat":
+        for from_id, to_id in chat_manager.pending_requests.items():
+            if to_id == user_id:
+                if chat_manager.accept_request(from_id, user_id):
+                    bot.edit_message_text("چت شروع شد! می‌توانید پیام بدهید.",
+                                        call.message.chat.id,
+                                        call.message.message_id,
+                                        reply_markup=create_chat_keyboard())
+                    bot.send_message(from_id,
+                                   "درخواست چت پذیرفته شد! می‌توانید پیام بدهید.",
+                                   reply_markup=create_chat_keyboard())
+                break
+    
+    elif call.data == "reject_chat":
+        for from_id, to_id in list(chat_manager.pending_requests.items()):
+            if to_id == user_id:
+                del chat_manager.pending_requests[from_id]
+                bot.edit_message_text("درخواست چت رد شد.",
+                                    call.message.chat.id,
+                                    call.message.message_id)
+                bot.send_message(from_id, "متأسفانه درخواست چت شما رد شد.")
+                break
+    
+    elif call.data == "end_chat":
+        partner_id = chat_manager.end_chat(user_id)
+        if partner_id:
+            bot.edit_message_text("چت پایان یافت.",
+                                call.message.chat.id,
+                                call.message.message_id)
+            bot.send_message(partner_id, "چت توسط طرف مقابل پایان یافت.")
 
-✨ همین حالا چت را شروع کنید!""", reply_markup=create_web_app_button(message.from_user.id))
+@bot.message_handler(func=lambda message: True)
+def handle_messages(message):
+    user_id = message.from_user.id
+    
+    if chat_manager.is_user_in_chat(user_id):
+        partner_id = chat_manager.get_chat_partner(user_id)
+        chat_manager.update_activity(user_id)
+        
+        try:
+            if message.content_type == 'text':
+                bot.send_message(partner_id, message.text)
+            elif message.content_type in ['photo', 'video', 'document', 'audio', 'voice', 'sticker']:
+                if message.caption:
+                    getattr(bot, f'send_{message.content_type}')(
+                        partner_id,
+                        getattr(message, message.content_type)[-1].file_id,
+                        caption=message.caption
+                    )
+                else:
+                    getattr(bot, f'send_{message.content_type}')(
+                        partner_id,
+                        getattr(message, message.content_type)[-1].file_id
+                    )
+        except Exception as e:
+            logging.error(f"Error sending message: {e}")
+            bot.send_message(user_id, "خطا در ارسال پیام. لطفاً دوباره تلاش کنید.")
 
-# Flask route to display user data
+# مسیرهای Flask
 @app.route('/')
 def index():
-    return redirect(url_for('display_users'))
+    return render_template('index.html')
 
-@app.route('/user/<int:telegram_user_id>')
-def user_profile(telegram_user_id):
-    conn, cursor = create_or_connect_database()
-    if not conn or not cursor:
-        return "Database error", 500
-        
-    cursor.execute("SELECT numeric_id, username, telegram_user_id, special_link, created_at FROM users WHERE telegram_user_id = ?", (telegram_user_id,))
-    user = cursor.fetchall()
-    
-    if not user:
-        return "User not found", 404
-        
-    profile_photo_url = get_user_profile_photo(telegram_user_id)
-    return render_template('index.html', users=user, profile_photo_url=profile_photo_url)
-
-@app.route('/users')
-def display_users():
-    telegram_user_id = request.args.get('telegram_user_id')
-    if telegram_user_id:
-        return redirect(url_for('user_profile', telegram_user_id=telegram_user_id))
-        
-    conn, cursor = create_or_connect_database()
-    if not conn or not cursor:
-        return "Database error", 500
-        
-    cursor.execute("SELECT numeric_id, username, telegram_user_id, special_link, created_at FROM users")
-    users = cursor.fetchall()
-    
-    if not users:
-        return "No users found", 404
-        
-    profile_photo_url = get_user_profile_photo(users[0][2])
-    return render_template('index.html', users=users, profile_photo_url=profile_photo_url)
-
-# Flask webhook route
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    logger = logging.getLogger(__name__)
-    logger.debug("Received webhook request")
-    try:
-        json_data = request.get_json(force=True)
-        logger.debug(f"Webhook data: {json_data}")
-        update = telebot.types.Update.de_json(json_data)
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
-        return 'ok'
-    except Exception as e:
-        logger.error(f"Error in webhook: {e}")
-        return str(e), 500
+        return ''
+    return 'OK'
 
-# Start the Flask app
 if __name__ == "__main__":
-    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-    logger = logging.getLogger(__name__)
-    logger.info("Starting bot...")
+    # راه‌اندازی دیتابیس
+    init_db()
     
-    # اطمینان از وجود دایرکتوری‌ها
-    ensure_directory_exists()
+    # تنظیم لاگینگ
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
     
-    def run_flask():
-        app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
-    
-    def run_bot():
-        while True:
-            try:
-                logger.info("Starting bot polling...")
-                bot.polling(none_stop=True)
-            except Exception as e:
-                logger.error(f"Bot polling error: {e}")
-                continue
-    
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    
-    flask_thread.start()
+    # راه‌اندازی ربات در thread جداگانه
+    bot_thread = threading.Thread(target=bot.polling, daemon=True)
     bot_thread.start()
     
-    try:
-        # نگه داشتن برنامه در حال اجرا
-        while True:
-            time.sleep(60)
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
+    # راه‌اندازی Flask
+    app.run(host='0.0.0.0', port=5000)
