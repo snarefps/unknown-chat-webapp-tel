@@ -18,7 +18,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__, template_folder='templates', static_folder='static')
 
 # Database configuration
-BASE_PATH = os.path.dirname(os.path.abspath(__file__))
+BASE_PATH = 'c:/c/unknown-chat-webapp-tel'
 DB_PATH = os.path.join(BASE_PATH, 'user_database.db')
 
 # Store active connections and pending requests
@@ -101,53 +101,70 @@ def handle_start(message):
     try:
         conn, cursor = create_or_connect_database()
         if not conn or not cursor:
-            bot.reply_to(message, "❌ خطا در اتصال به پایگاه داده!")
+            bot.reply_to(message, "خطای سیستم. لطفا بعدا دوباره تلاش کنید.")
             return
 
-        user_id = message.from_user.id
-        username = message.from_user.username or "بدون نام کاربری"
-        
-        # Check if user exists
-        cursor.execute('SELECT special_link FROM users WHERE telegram_user_id = ?', (user_id,))
-        existing_user = cursor.fetchone()
-        
-        if existing_user:
-            special_link = existing_user[0]
-        else:
-            # Generate a unique link
-            while True:
-                special_link = generate_unique_link()
-                cursor.execute('SELECT id FROM users WHERE special_link = ?', (special_link,))
-                if not cursor.fetchone():
-                    break
+        # پردازش پارامتر start
+        if len(message.text.split()) > 1:
+            special_link = message.text.split()[1]
+            cursor.execute("SELECT telegram_user_id FROM users WHERE special_link = ?", (special_link,))
+            owner = cursor.fetchone()
             
-            # Insert new user
-            cursor.execute('''
-                INSERT INTO users (numeric_id, username, telegram_user_id, special_link)
-                VALUES (?, ?, ?, ?)
-            ''', (user_id, username, user_id, special_link))
-            conn.commit()
-        
-        # Send welcome message
-        bot.reply_to(
-            message,
-            f"""👋 سلام به ربات چت ناشناس خوش آمدید!
+            if owner:
+                # بررسی ارتباط با خود
+                if owner[0] == message.from_user.id:
+                    bot.reply_to(message, "⚠️ شما نمی‌توانید با خودتان چت کنید!")
+                    return
+                    
+                pending_connections[message.from_user.id] = owner[0]
+                bot.send_message(
+                    owner[0],
+                    f"✨ درخواست چت جدید!\n\n👤 کاربر {message.from_user.username or 'ناشناس'} می‌خواهد با شما گفتگو کند.\n\n🤝 مایل به برقراری ارتباط هستید؟",
+                    reply_markup=create_connection_buttons()
+                )
+                bot.reply_to(message, "🌟 درخواست چت شما ارسال شد!\n\n⏳ لطفاً منتظر پاسخ بمانید...", reply_markup=create_web_app_button(message.from_user.id))
+            else:
+                bot.reply_to(message, "⚠️ اوه! لینک ارتباطی که استفاده کردید معتبر نیست.\n\n🔄 لطفاً دوباره تلاش کنید.", reply_markup=create_web_app_button(message.from_user.id))
+        else:
+            # ثبت نام کاربر جدید
+            cursor.execute("SELECT * FROM users WHERE telegram_user_id = ?", (message.from_user.id,))
+            existing_user = cursor.fetchone()
+            
+            if existing_user:
+                bot.reply_to(
+                    message, 
+                    f"""🎉 خوش برگشتید {message.from_user.first_name} عزیز!
 
-🔑 لینک اختصاصی شما:
-https://t.me/{BOT_USERNAME}?start={special_link}
+🔗 لینک اختصاصی شما:
+t.me/{bot.get_me().username}?start={existing_user[4]}
 
-✨ با اشتراک‌گذاری این لینک، دوستانتان می‌توانند به صورت ناشناس با شما چت کنند.
+💫 با اشتراک‌گذاری این لینک، دوستانتان می‌توانند مستقیماً با شما چت کنند!""",
+                    reply_markup=create_web_app_button(message.from_user.id)
+                )
+            else:
+                numeric_id = random.randint(10000, 99999)
+                special_link = generate_unique_link()
+                
+                cursor.execute(
+                    "INSERT INTO users (numeric_id, username, telegram_user_id, special_link) VALUES (?, ?, ?, ?)",
+                    (numeric_id, message.from_user.username, message.from_user.id, special_link)
+                )
+                conn.commit()
+                
+                welcome_msg = f"""
+🎈 {message.from_user.first_name} عزیز، به ربات ما خوش آمدید!
 
-⚡️ برای شروع چت:
-1️⃣ لینک خود را به اشتراک بگذارید
-2️⃣ یا از لینک دوستانتان استفاده کنید
+📝 اطلاعات پروفایل شما:
+🔢 شناسه: {numeric_id}
+🔗 لینک اختصاصی شما: 
+t.me/{bot.get_me().username}?start={special_link}
 
-❤️ امیدواریم تجربه خوبی داشته باشید!""",
-            reply_markup=create_web_app_button(user_id)
-        )
-        
+✨ با اشتراک‌گذاری لینک اختصاصی خود، دوستانتان می‌توانند مستقیماً با شما چت کنند!
+                """
+                bot.reply_to(message, welcome_msg, reply_markup=create_web_app_button(message.from_user.id))
+
     except Exception as e:
-        print(f"خطا در هندل استارت: {e}")
+        print(f"خطا در هندلر شروع: {e}")
         bot.reply_to(message, "❌ متأسفانه مشکلی پیش آمده! لطفاً دوباره تلاش کنید.")
     finally:
         if conn:
