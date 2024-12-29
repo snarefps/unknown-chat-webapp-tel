@@ -12,9 +12,9 @@ import requests
 from pathlib import Path
 
 # تنظیمات اصلی
-BOT_TOKEN = os.getenv('BOT_TOKEN', '7359047596:AAFzCjMQM1YuovahhOqXB1BS9lijCxu29Ew')
-BOT_USERNAME = os.getenv('BOT_USERNAME', 'your_bot_username')
-DOMAIN = os.getenv('DOMAIN', 'https://your-domain.com')
+BOT_TOKEN = '7743246613:AAFQPgQOQqRpCG3HtD7Ly-o8VAm-P6O0cEM'
+BOT_USERNAME = 'aecvfaecvasbot'
+DOMAIN = 'https://ideal-pangolin-solely.ngrok-free.app'
 
 # تنظیمات Flask
 app = Flask(__name__, template_folder='templates', static_folder='static')
