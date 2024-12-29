@@ -28,9 +28,10 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 BASE_PATH = '/opt/telegram-webapp'
 DB_PATH = os.path.join(BASE_PATH, 'user_database.db')
 
-# Store active connections and pending requests
-active_connections = defaultdict(dict)
-pending_connections = {}
+# Store active connections and pending requests with timeout
+active_connections = defaultdict(lambda: {'timestamp': None, 'data': {}})
+pending_connections = defaultdict(lambda: {'timestamp': None, 'data': {}})
+CONNECTION_TIMEOUT = 3600  # 1 hour timeout
 
 def ensure_directory_exists():
     try:
@@ -103,6 +104,22 @@ def get_user_profile_photo(user_id):
         print(f"خطا در دریافت عکس پروفایل: {e}")
         return "https://via.placeholder.com/150"
 
+def cleanup_old_connections():
+    current_time = time.time()
+    for user_id in list(active_connections.keys()):
+        if active_connections[user_id]['timestamp'] and current_time - active_connections[user_id]['timestamp'] > CONNECTION_TIMEOUT:
+            del active_connections[user_id]
+    
+    for user_id in list(pending_connections.keys()):
+        if pending_connections[user_id]['timestamp'] and current_time - pending_connections[user_id]['timestamp'] > 300:  # 5 minutes for pending
+            del pending_connections[user_id]
+
+def update_connection_timestamp(user_id, is_pending=False):
+    if is_pending:
+        pending_connections[user_id]['timestamp'] = time.time()
+    else:
+        active_connections[user_id]['timestamp'] = time.time()
+
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     try:
@@ -123,7 +140,7 @@ def handle_start(message):
                     bot.reply_to(message, "⚠️ شما نمی‌توانید با خودتان چت کنید!")
                     return
                     
-                pending_connections[message.from_user.id] = owner[0]
+                pending_connections[message.from_user.id] = {'timestamp': time.time(), 'data': {'owner_id': owner[0]}}
                 bot.send_message(
                     owner[0],
                     f"✨ درخواست چت جدید!\n\n👤 کاربر {message.from_user.username or 'ناشناس'} می‌خواهد با شما گفتگو کند.\n\n🤝 مایل به برقراری ارتباط هستید؟",
@@ -179,19 +196,23 @@ t.me/{bot.get_me().username}?start={special_link}
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     try:
+        cleanup_old_connections()
         user_id = call.from_user.id
         
         if call.data == "accept_connection":
-            requester_id = None
-            for req_id, owner_id in pending_connections.items():
-                if owner_id == user_id:
-                    requester_id = req_id
-                    active_connections[owner_id] = {'connected_to': req_id}
-                    active_connections[req_id] = {'connected_to': owner_id}
-                    del pending_connections[req_id]
-                    break
+            if user_id in pending_connections:
+                update_connection_timestamp(user_id)
+                active_connections[user_id] = pending_connections[user_id]
+                del pending_connections[user_id]
+                bot.answer_callback_query(call.id, "ارتباط برقرار شد!")
+                bot.edit_message_text(
+                    "✅ ارتباط برقرار شد. برای قطع ارتباط از دکمه زیر استفاده کنید.",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=create_disconnect_button()
+                )
                 
-            if requester_id:
+                requester_id = active_connections[user_id]['data']['owner_id']
                 disconnect_message = bot.send_message(
                     requester_id,
                     """✨ درخواست چت شما پذیرفته شد!
@@ -221,7 +242,7 @@ def handle_callback(call):
         elif call.data == "reject_connection":
             requester_id = None
             for req_id, owner_id in pending_connections.items():
-                if owner_id == user_id:
+                if owner_id['data']['owner_id'] == user_id:
                     requester_id = req_id
                     del pending_connections[req_id]
                     break
@@ -236,7 +257,7 @@ def handle_callback(call):
                 
         elif call.data == "disconnect":
             if user_id in active_connections:
-                other_user = active_connections[user_id].get('connected_to')
+                other_user = active_connections[user_id]['data']['owner_id']
                 if other_user:
                     try:
                         bot.unpin_all_chat_messages(user_id)
@@ -263,7 +284,7 @@ def handle_callback(call):
 @bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'video_note', 'sticker', 'animation'])
 def handle_messages(message):
     if message.from_user.id in active_connections:
-        other_user = active_connections[message.from_user.id].get('connected_to')
+        other_user = active_connections[message.from_user.id]['data']['owner_id']
         if other_user:
             try:
                 # ارسال متن
