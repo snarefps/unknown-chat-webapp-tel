@@ -9,17 +9,24 @@ from collections import defaultdict
 import asyncio
 import logging
 import requests
+from pathlib import Path
 
-BOT_TOKEN = '7359047596:AAFzCjMQM1YuovahhOqXB1BS9lijCxu29Ew'
-BOT_USERNAME = 'your_bot_username'  # Add your bot username here
+# تنظیمات اصلی
+BOT_TOKEN = os.getenv('BOT_TOKEN', '7359047596:AAFzCjMQM1YuovahhOqXB1BS9lijCxu29Ew')
+BOT_USERNAME = os.getenv('BOT_USERNAME', 'your_bot_username')
+DOMAIN = os.getenv('DOMAIN', 'https://your-domain.com')
+
+# تنظیمات Flask
+app = Flask(__name__, template_folder='templates', static_folder='static')
+app.config['SECRET_KEY'] = os.urandom(24)
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+
+# تنظیمات Telegram bot
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Flask app setup
-app = Flask(__name__, template_folder='templates', static_folder='static')
-
-# Database configuration
-BASE_PATH = 'c:/c/unknown-chat-webapp-tel'
-DB_PATH = os.path.join(BASE_PATH, 'user_database.db')
+# تنظیمات مسیرها و دیتابیس
+BASE_PATH = Path(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = BASE_PATH / 'user_database.db'
 
 # Store active connections and pending requests
 active_connections = defaultdict(dict)
@@ -76,7 +83,7 @@ def create_disconnect_button():
     return keyboard
 
 def create_web_app_button(user_id):
-    web_app_info = types.WebAppInfo(url=f"https://your-domain.com/users?telegram_user_id={user_id}")
+    web_app_info = types.WebAppInfo(url=f"https://ideal-pangolin-solely.ngrok-free.app/users?telegram_user_id={user_id}")
     markup = types.InlineKeyboardMarkup()
     web_app_btn = types.InlineKeyboardButton("باز کردن وب اپلیکیشن", web_app=web_app_info)
     markup.add(web_app_btn)
@@ -165,10 +172,9 @@ t.me/{bot.get_me().username}?start={special_link}
 
     except Exception as e:
         print(f"خطا در هندلر شروع: {e}")
-        bot.reply_to(message, "❌ متأسفانه مشکلی پیش آمده! لطفاً دوباره تلاش کنید.")
+        bot.reply_to(message, "❌ متأسفانه مشکلی پیش آمده!\n\n🔄 لطفاً چند لحظه دیگر دوباره تلاش کنید.", reply_markup=create_web_app_button(message.from_user.id))
     finally:
-        if conn:
-            conn.close()
+        conn.close()
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
@@ -311,77 +317,85 @@ def handle_messages(message):
 1️⃣ لینک اختصاصی خود را با دوستانتان به اشتراک بگذارید
 2️⃣ یا از لینک دوستانتان استفاده کنید
 
-✨ همین حالا چت را شروع کنید!""")
+✨ همین حالا چت را شروع کنید!""", reply_markup=create_web_app_button(message.from_user.id))
 
 # Flask route to display user data
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return redirect(url_for('display_users'))
+
+@app.route('/user/<int:telegram_user_id>')
+def user_profile(telegram_user_id):
+    conn, cursor = create_or_connect_database()
+    if not conn or not cursor:
+        return "Database error", 500
+        
+    cursor.execute("SELECT numeric_id, username, telegram_user_id, special_link, created_at FROM users WHERE telegram_user_id = ?", (telegram_user_id,))
+    user = cursor.fetchall()
+    
+    if not user:
+        return "User not found", 404
+        
+    profile_photo_url = get_user_profile_photo(telegram_user_id)
+    return render_template('index.html', users=user, profile_photo_url=profile_photo_url)
 
 @app.route('/users')
-def user_profile():
-    telegram_user_id = request.args.get('telegram_user_id')
-    if not telegram_user_id:
-        return redirect(url_for('index'))
-    
-    conn, cursor = create_or_connect_database()
-    if not conn or not cursor:
-        return "Database Error", 500
-    
-    try:
-        cursor.execute('SELECT * FROM users WHERE telegram_user_id = ?', (telegram_user_id,))
-        user = cursor.fetchone()
-        if not user:
-            return "User not found", 404
-            
-        return render_template('user_profile.html', user=user)
-    finally:
-        conn.close()
-
-@app.route('/users/all')
 def display_users():
+    telegram_user_id = request.args.get('telegram_user_id')
+    if telegram_user_id:
+        return redirect(url_for('user_profile', telegram_user_id=telegram_user_id))
+        
     conn, cursor = create_or_connect_database()
     if not conn or not cursor:
-        return "Database Error", 500
-    
-    try:
-        cursor.execute('SELECT * FROM users ORDER BY created_at DESC')
-        users = cursor.fetchall()
+        return "Database error", 500
         
-        user_list = []
-        for user in users:
-            user_dict = {
-                'id': user[0],
-                'numeric_id': user[1],
-                'username': user[2],
-                'telegram_user_id': user[3],
-                'special_link': user[4],
-                'created_at': user[5],
-                'profile_photo': get_user_profile_photo(user[3])
-            }
-            user_list.append(user_dict)
-            
-        return {'users': user_list}
-    finally:
-        conn.close()
+    cursor.execute("SELECT numeric_id, username, telegram_user_id, special_link, created_at FROM users")
+    users = cursor.fetchall()
+    
+    if not users:
+        return "No users found", 404
+        
+    profile_photo_url = get_user_profile_photo(users[0][2])
+    return render_template('index.html', users=users, profile_photo_url=profile_photo_url)
 
 # Flask webhook route
-@bot.message_handler(func=lambda message: True)
-def echo_all(message):
-    bot.reply_to(message, message.text)
-
-if __name__ == "__main__":
-    # Set up logging
-    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+@app.route('/webhook', methods=['POST'])
+def webhook():
     logger = logging.getLogger(__name__)
+    logger.debug("Received webhook request")
+    try:
+        json_data = request.get_json(force=True)
+        logger.debug(f"Webhook data: {json_data}")
+        update = telebot.types.Update.de_json(json_data)
+        bot.process_new_updates([update])
+        return 'ok'
+    except Exception as e:
+        logger.error(f"Error in webhook: {e}")
+        return str(e), 500
+
+# Start the Flask app
+if __name__ == "__main__":
+    # تنظیمات لاگینگ
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO,
+        handlers=[
+            logging.FileHandler(BASE_PATH / 'app.log'),
+            logging.StreamHandler()
+        ]
+    )
+    logger = logging.getLogger(__name__)
+    logger.info("Starting bot...")
     
-    # Create database tables
-    create_or_connect_database()
+    # اطمینان از وجود دیتابیس
+    conn, cursor = create_or_connect_database()
+    if conn and cursor:
+        conn.close()
     
-    # Start bot polling in a separate thread
-    import threading
-    bot_thread = threading.Thread(target=bot.polling, kwargs={'none_stop': True})
-    bot_thread.start()
-    
-    # Run Flask app
-    app.run(host='0.0.0.0', port=5000)
+    # اجرای سرور
+    app.run(
+        host='0.0.0.0',
+        port=int(os.getenv('PORT', 5000)),
+        debug=False,
+        threaded=True
+    )
