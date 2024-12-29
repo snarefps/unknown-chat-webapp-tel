@@ -244,6 +244,12 @@ def handle_callback(call):
                     except:
                         pass
 
+                    # حذف اتصال برای هر دو کاربر
+                    if user_id in active_connections:
+                        del active_connections[user_id]
+                    if other_user in active_connections:
+                        del active_connections[other_user]
+                        
                     bot.send_message(user_id, """❌ چت پایان یافت!
 
 🌟 امیدواریم از این گفتگو لذت برده باشید.
@@ -252,9 +258,6 @@ def handle_callback(call):
 
 🌟 امیدواریم از این گفتگو لذت برده باشید.
 ✨ می‌توانید دوباره با کاربران دیگر چت کنید!""")
-                    
-                    del active_connections[user_id]
-                    del active_connections[other_user]
                     
     except Exception as e:
         print(f"خطا در هندلر کال‌بک: {e}")
@@ -265,6 +268,13 @@ def handle_messages(message):
     if message.from_user.id in active_connections:
         other_user = active_connections[message.from_user.id].get('connected_to')
         if other_user:
+            # چک کردن وضعیت اتصال کاربر مقابل
+            if other_user not in active_connections or active_connections[other_user].get('connected_to') != message.from_user.id:
+                # اتصال از طرف کاربر مقابل قطع شده
+                del active_connections[message.from_user.id]
+                bot.send_message(message.from_user.id, "❌ متأسفانه اتصال با کاربر مقابل قطع شده است.")
+                return
+                
             try:
                 # ارسال متن
                 if message.text:
