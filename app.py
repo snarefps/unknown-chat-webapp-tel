@@ -266,9 +266,6 @@ def handle_messages(message):
         other_user = active_connections[message.from_user.id].get('connected_to')
         if other_user:
             try:
-                # تلاش برای ارسال پیام تستی برای چک کردن اتصال
-                bot.get_chat(other_user)
-                
                 # ارسال متن
                 if message.text:
                     bot.send_message(other_user, f"💬 پیام جدید:\n{message.text}")
