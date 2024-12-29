@@ -12,9 +12,9 @@ import requests
 from pathlib import Path
 
 # تنظیمات اصلی
-BOT_TOKEN = os.getenv('BOT_TOKEN', '7359047596:AAFzCjMQM1YuovahhOqXB1BS9lijCxu29Ew')
-BOT_USERNAME = os.getenv('BOT_USERNAME', 'your_bot_username')
-DOMAIN = os.getenv('DOMAIN', 'https://your-domain.com')
+BOT_TOKEN = '7743246613:AAFQPgQOQqRpCG3HtD7Ly-o8VAm-P6O0cEM'
+BOT_USERNAME = 'aecvfaecvasbot'
+DOMAIN = 'https://ideal-pangolin-solely.ngrok-free.app'
 
 # تنظیمات Flask
 app = Flask(__name__, template_folder='templates', static_folder='static')
@@ -22,7 +22,7 @@ app.config['SECRET_KEY'] = os.urandom(24)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
 # تنظیمات Telegram bot
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN, threaded=True, parse_mode='HTML')
 
 # تنظیمات مسیرها و دیتابیس
 BASE_PATH = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -505,16 +505,22 @@ if __name__ == "__main__":
     if conn and cursor:
         conn.close()
     
-    # تنظیم webhook
-    webhook_url = f"{DOMAIN}/webhook"
-    bot.remove_webhook()
-    bot.set_webhook(url=webhook_url)
-    logger.info(f"Webhook set to: {webhook_url}")
-    
-    # اجرای سرور
-    app.run(
-        host='0.0.0.0',
-        port=int(os.getenv('PORT', 5000)),
-        debug=False,
-        threaded=True
-    )
+    try:
+        # حذف webhook قبلی
+        bot.remove_webhook()
+        
+        # تنظیم webhook جدید
+        webhook_url = f"{DOMAIN}/webhook"
+        bot.set_webhook(url=webhook_url, drop_pending_updates=True)
+        logger.info(f"Webhook set to: {webhook_url}")
+        
+        # اجرای سرور
+        app.run(
+            host='0.0.0.0',
+            port=int(os.getenv('PORT', 5000)),
+            debug=False,
+            threaded=True
+        )
+    except Exception as e:
+        logger.error(f"Error starting bot: {e}")
+        raise
