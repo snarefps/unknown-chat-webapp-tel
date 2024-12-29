@@ -12,9 +12,9 @@ import requests
 from pathlib import Path
 
 # تنظیمات اصلی
-BOT_TOKEN = '7743246613:AAFQPgQOQqRpCG3HtD7Ly-o8VAm-P6O0cEM'
-BOT_USERNAME = 'aecvfaecvasbot'
-DOMAIN = 'https://ideal-pangolin-solely.ngrok-free.app'
+BOT_TOKEN = os.getenv('BOT_TOKEN', '7359047596:AAFzCjMQM1YuovahhOqXB1BS9lijCxu29Ew')
+BOT_USERNAME = os.getenv('BOT_USERNAME', 'your_bot_username')
+DOMAIN = os.getenv('DOMAIN', 'https://your-domain.com')
 
 # تنظیمات Flask
 app = Flask(__name__, template_folder='templates', static_folder='static')
@@ -506,6 +506,12 @@ if __name__ == "__main__":
     conn, cursor = create_or_connect_database()
     if conn and cursor:
         conn.close()
+    
+    # تنظیم webhook
+    webhook_url = f"{DOMAIN}/webhook"
+    bot.remove_webhook()
+    bot.set_webhook(url=webhook_url)
+    logger.info(f"Webhook set to: {webhook_url}")
     
     # اجرای سرور
     app.run(
