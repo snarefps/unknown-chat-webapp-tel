@@ -83,11 +83,11 @@ def create_disconnect_button():
     return keyboard
 
 def create_web_app_button(user_id):
-    web_app_info = types.WebAppInfo(url=f"https://ideal-pangolin-solely.ngrok-free.app/users?telegram_user_id={user_id}")
-    markup = types.InlineKeyboardMarkup()
-    web_app_btn = types.InlineKeyboardButton("باز کردن وب اپلیکیشن", web_app=web_app_info)
-    markup.add(web_app_btn)
-    return markup
+    keyboard = types.InlineKeyboardMarkup()
+    web_app_info = types.WebAppInfo(url=f"https://chatbot.smart-flow.com.tr/users?telegram_user_id={user_id}")
+    web_app_button = types.InlineKeyboardButton(text="🌐 باز کردن وب اپلیکیشن", web_app=web_app_info)
+    keyboard.add(web_app_button)
+    return keyboard
 
 def get_user_profile_photo(user_id):
     try:
