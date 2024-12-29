@@ -47,6 +47,8 @@ class ChatState:
         self._pending = {}
         self._lock = threading.Lock()
         self._state_file = 'chat_state.json'
+        self._last_save = 0
+        self._save_interval = 1  # حداقل فاصله بین ذخیره‌سازی‌ها (ثانیه)
         self._load_state()
         
     def _load_state(self):
@@ -61,12 +63,20 @@ class ChatState:
             logger.error(f"Error loading chat state: {e}")
             
     def _save_state(self):
+        current_time = time.time()
+        if current_time - self._last_save < self._save_interval:
+            return
+            
         try:
-            with open(self._state_file, 'w') as f:
+            temp_file = f"{self._state_file}.temp"
+            with open(temp_file, 'w') as f:
                 json.dump({
                     'connections': self._connections,
-                    'pending': self._pending
+                    'pending': self._pending,
+                    'timestamp': current_time
                 }, f)
+            os.replace(temp_file, self._state_file)
+            self._last_save = current_time
             logger.debug("Chat state saved successfully")
         except Exception as e:
             logger.error(f"Error saving chat state: {e}")
@@ -74,9 +84,10 @@ class ChatState:
     def add_pending(self, from_id, to_id):
         with self._lock:
             try:
-                if str(from_id) not in self._connections and str(to_id) not in self._connections:
-                    self._pending[str(from_id)] = {
-                        'to_id': str(to_id),
+                from_id, to_id = str(from_id), str(to_id)
+                if from_id not in self._connections and to_id not in self._connections:
+                    self._pending[from_id] = {
+                        'to_id': to_id,
                         'timestamp': time.time()
                     }
                     self._save_state()
@@ -97,13 +108,15 @@ class ChatState:
                         'partner': to_id,
                         'timestamp': current_time,
                         'active': True,
-                        'messages_count': 0
+                        'messages_count': 0,
+                        'last_message_time': current_time
                     }
                     self._connections[to_id] = {
                         'partner': from_id,
                         'timestamp': current_time,
                         'active': True,
-                        'messages_count': 0
+                        'messages_count': 0,
+                        'last_message_time': current_time
                     }
                     del self._pending[from_id]
                     self._save_state()
@@ -114,6 +127,70 @@ class ChatState:
                 logger.error(f"Error in accept_chat: {e}")
                 return False
         
+    def get_partner(self, user_id):
+        with self._lock:
+            try:
+                user_id = str(user_id)
+                if user_id in self._connections and self._connections[user_id]['active']:
+                    conn = self._connections[user_id]
+                    partner = conn['partner']
+                    
+                    # بروزرسانی timestamp و شمارنده پیام‌ها
+                    current_time = time.time()
+                    conn['timestamp'] = current_time
+                    conn['last_message_time'] = current_time
+                    conn['messages_count'] = conn.get('messages_count', 0) + 1
+                    
+                    if partner in self._connections:
+                        partner_conn = self._connections[partner]
+                        partner_conn['timestamp'] = current_time
+                        partner_conn['last_message_time'] = current_time
+                        partner_conn['messages_count'] = partner_conn.get('messages_count', 0)
+                        
+                        # اطمینان از فعال بودن هر دو طرف
+                        conn['active'] = True
+                        partner_conn['active'] = True
+                        
+                        self._save_state()
+                        return partner
+                    else:
+                        logger.error(f"Partner {partner} not found for user {user_id}")
+                        return None
+                return None
+            except Exception as e:
+                logger.error(f"Error in get_partner: {e}")
+                return None
+        
+    def is_connected(self, user_id):
+        with self._lock:
+            try:
+                user_id = str(user_id)
+                if user_id in self._connections:
+                    conn = self._connections[user_id]
+                    partner = conn.get('partner')
+                    
+                    if partner and partner in self._connections:
+                        # بررسی فعال بودن هر دو طرف
+                        both_active = (conn['active'] and 
+                                     self._connections[partner]['active'])
+                        
+                        # بررسی آخرین زمان پیام
+                        current_time = time.time()
+                        last_message = max(conn.get('last_message_time', 0),
+                                         self._connections[partner].get('last_message_time', 0))
+                        
+                        # اگر بیش از 5 دقیقه پیامی رد و بدل نشده، اتصال را قطع می‌کنیم
+                        if current_time - last_message > 300:
+                            logger.info(f"Connection timed out for users {user_id} and {partner}")
+                            self.end_chat(user_id)
+                            return False
+                            
+                        return both_active
+                return False
+            except Exception as e:
+                logger.error(f"Error in is_connected: {e}")
+                return False
+
     def end_chat(self, user_id):
         with self._lock:
             try:
@@ -131,41 +208,6 @@ class ChatState:
                 logger.error(f"Error in end_chat: {e}")
                 return None
         
-    def get_partner(self, user_id):
-        with self._lock:
-            try:
-                user_id = str(user_id)
-                if user_id in self._connections and self._connections[user_id]['active']:
-                    conn = self._connections[user_id]
-                    partner = conn['partner']
-                    
-                    # بروزرسانی timestamp و شمارنده پیام‌ها
-                    current_time = time.time()
-                    conn['timestamp'] = current_time
-                    conn['messages_count'] = conn.get('messages_count', 0) + 1
-                    
-                    if partner in self._connections:
-                        self._connections[partner]['timestamp'] = current_time
-                        self._connections[partner]['messages_count'] = self._connections[partner].get('messages_count', 0)
-                        
-                    self._save_state()
-                    return partner
-                return None
-            except Exception as e:
-                logger.error(f"Error in get_partner: {e}")
-                return None
-        
-    def is_connected(self, user_id):
-        with self._lock:
-            try:
-                user_id = str(user_id)
-                return (user_id in self._connections and 
-                        self._connections[user_id]['active'] and 
-                        self._connections[user_id]['partner'] in self._connections)
-            except Exception as e:
-                logger.error(f"Error in is_connected: {e}")
-                return False
-            
     def cleanup_old_connections(self):
         try:
             current_time = time.time()
