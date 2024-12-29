@@ -313,47 +313,95 @@ def handle_callback(call):
         logger.info(f"Callback received: {call.data} from user {call.from_user.id}")
         if call.data == 'accept_connection':
             requester_id = None
-            for req_id, data in chat_state._pending.items():
-                if data['to_id'] == call.from_user.id:
+            logger.debug(f"Current pending connections: {chat_state._pending}")
+            
+            # پیدا کردن درخواست مربوطه
+            for req_id, data in list(chat_state._pending.items()):
+                logger.debug(f"Checking request {req_id} -> {data}")
+                if str(data['to_id']) == str(call.from_user.id):
                     requester_id = req_id
-                    if chat_state.accept_chat(req_id, call.from_user.id):
-                        logger.info(f"Chat established between {call.from_user.id} and {requester_id}")
+                    logger.info(f"Found matching request: {req_id} -> {call.from_user.id}")
+                    break
+            
+            if requester_id:
+                logger.info(f"Attempting to accept chat between {requester_id} and {call.from_user.id}")
+                if chat_state.accept_chat(requester_id, call.from_user.id):
+                    logger.info(f"Chat successfully established between {call.from_user.id} and {requester_id}")
+                    
+                    # ارسال پیام تایید به هر دو کاربر
+                    try:
                         bot.edit_message_text(
                             "✅ ارتباط برقرار شد.",
                             call.message.chat.id,
                             call.message.message_id,
                             reply_markup=create_disconnect_button()
                         )
+                    except Exception as e:
+                        logger.error(f"Error editing acceptance message: {e}")
+                    
+                    try:
                         bot.send_message(
-                            requester_id,
+                            int(requester_id),
                             "✅ درخواست چت شما پذیرفته شد!",
                             reply_markup=create_disconnect_button()
                         )
-                    break
+                    except Exception as e:
+                        logger.error(f"Error sending acceptance message to requester: {e}")
+                else:
+                    logger.error(f"Failed to accept chat between {requester_id} and {call.from_user.id}")
+                    bot.answer_callback_query(call.id, "خطا در برقراری ارتباط. لطفاً دوباره تلاش کنید.")
+            else:
+                logger.warning(f"No pending request found for user {call.from_user.id}")
+                bot.answer_callback_query(call.id, "درخواست چت یافت نشد.")
         
         elif call.data == 'reject_connection':
+            rejected = False
             for req_id, data in list(chat_state._pending.items()):
-                if data['to_id'] == call.from_user.id:
+                if str(data['to_id']) == str(call.from_user.id):
                     logger.info(f"Rejecting chat request from {req_id}")
-                    bot.send_message(req_id, "❌ درخواست چت شما رد شد.")
+                    try:
+                        bot.send_message(int(req_id), "❌ درخواست چت شما رد شد.")
+                    except Exception as e:
+                        logger.error(f"Error sending rejection message: {e}")
+                        
+                    try:
+                        bot.edit_message_text(
+                            "❌ درخواست رد شد.",
+                            call.message.chat.id,
+                            call.message.message_id
+                        )
+                    except Exception as e:
+                        logger.error(f"Error editing rejection message: {e}")
+                        
                     del chat_state._pending[req_id]
-                    bot.edit_message_text(
-                        "❌ درخواست رد شد.",
-                        call.message.chat.id,
-                        call.message.message_id
-                    )
+                    rejected = True
                     break
-        
+                    
+            if not rejected:
+                logger.warning(f"No request found to reject for user {call.from_user.id}")
+                bot.answer_callback_query(call.id, "درخواست چت یافت نشد.")
+                
         elif call.data == "disconnect":
+            logger.info(f"Disconnect requested by user {call.from_user.id}")
             partner_id = chat_state.end_chat(call.from_user.id)
             if partner_id:
                 logger.info(f"Chat ended between {call.from_user.id} and {partner_id}")
-                bot.send_message(partner_id, "❌ چت به پایان رسید.")
-                bot.edit_message_text(
-                    "❌ چت به پایان رسید.",
-                    call.message.chat.id,
-                    call.message.message_id
-                )
+                try:
+                    bot.send_message(int(partner_id), "❌ چت به پایان رسید.")
+                except Exception as e:
+                    logger.error(f"Error sending disconnect message to partner: {e}")
+                    
+                try:
+                    bot.edit_message_text(
+                        "❌ چت به پایان رسید.",
+                        call.message.chat.id,
+                        call.message.message_id
+                    )
+                except Exception as e:
+                    logger.error(f"Error editing disconnect message: {e}")
+            else:
+                logger.warning(f"No active chat found to disconnect for user {call.from_user.id}")
+                bot.answer_callback_query(call.id, "چت فعالی یافت نشد.")
                 
     except Exception as e:
         logger.error(f"Error in callback handler: {e}", exc_info=True)
