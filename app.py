@@ -169,8 +169,9 @@ def handle_start(message):
             return
 
         # پردازش پارامتر start
-        if len(message.text.split()) > 1:
-            special_link = message.text.split()[1]
+        start_args = message.text.split()
+        if len(start_args) > 1:
+            special_link = start_args[1]
             cursor.execute("SELECT telegram_user_id FROM users WHERE special_link = ?", (special_link,))
             owner = cursor.fetchone()
             
@@ -385,51 +386,50 @@ def handle_messages(message):
     logger = logging.getLogger(__name__)
     user_id = message.from_user.id
     
+    # اگر پیام /start باشد، پردازش نکن
+    if message.text and message.text.startswith('/'):
+        return
+        
     try:
         # بررسی اتصال کاربر
         other_user = connections.get_connected_user(user_id)
         
-        if other_user:
-            logger.info(f"Sending message from {user_id} to {other_user}")
+        if not other_user:
+            bot.reply_to(message, "⚠️ شما در حال حاضر با کسی در ارتباط نیستید!")
+            return
             
-            try:
-                if message.text:
-                    bot.send_message(other_user, f"💬 پیام جدید:\n{message.text}")
-                elif message.photo:
-                    caption = message.caption if message.caption else ""
-                    bot.send_photo(other_user, message.photo[-1].file_id, caption=f"🖼️ تصویر جدید:\n{caption}")
-                elif message.video:
-                    caption = message.caption if message.caption else ""
-                    bot.send_video(other_user, message.video.file_id, caption=f"🎥 ویدیو جدید:\n{caption}")
-                elif message.document:
-                    caption = message.caption if message.caption else ""
-                    bot.send_document(other_user, message.document.file_id, caption=f"📎 فایل جدید:\n{caption}")
-                elif message.audio:
-                    caption = message.caption if message.caption else ""
-                    bot.send_audio(other_user, message.audio.file_id, caption=f"🎵 موزیک جدید:\n{caption}")
-                elif message.voice:
-                    caption = message.caption if message.caption else ""
-                    bot.send_voice(other_user, message.voice.file_id, caption=f"🎤 پیام صوتی جدید:\n{caption}")
-                elif message.video_note:
-                    bot.send_video_note(other_user, message.video_note.file_id)
-                elif message.sticker:
-                    bot.send_sticker(other_user, message.sticker.file_id)
-                elif message.animation:
-                    caption = message.caption if message.caption else ""
-                    bot.send_animation(other_user, message.animation.file_id, caption=f"✨ گیف جدید:\n{caption}")
-                
-            except Exception as e:
-                logger.error(f"Error sending message: {str(e)}")
-                bot.reply_to(message, "❌ خطا در ارسال پیام! لطفاً دوباره تلاش کنید.")
-                
-        else:
-            bot.reply_to(message, """📝 برای شروع چت:
-
-1️⃣ لینک اختصاصی خود را با دوستانتان به اشتراک بگذارید
-2️⃣ یا از لینک دوستانتان استفاده کنید
-
-✨ همین حالا چت را شروع کنید!""")
+        logger.info(f"Sending message from {user_id} to {other_user}")
             
+        try:
+            if message.text:
+                bot.send_message(other_user, f"💬 پیام جدید:\n{message.text}")
+            elif message.photo:
+                caption = message.caption if message.caption else ""
+                bot.send_photo(other_user, message.photo[-1].file_id, caption=f"🖼️ تصویر جدید:\n{caption}")
+            elif message.video:
+                caption = message.caption if message.caption else ""
+                bot.send_video(other_user, message.video.file_id, caption=f"🎥 ویدیو جدید:\n{caption}")
+            elif message.document:
+                caption = message.caption if message.caption else ""
+                bot.send_document(other_user, message.document.file_id, caption=f"📎 فایل جدید:\n{caption}")
+            elif message.audio:
+                caption = message.caption if message.caption else ""
+                bot.send_audio(other_user, message.audio.file_id, caption=f"🎵 موزیک جدید:\n{caption}")
+            elif message.voice:
+                caption = message.caption if message.caption else ""
+                bot.send_voice(other_user, message.voice.file_id, caption=f"🎤 پیام صوتی جدید:\n{caption}")
+            elif message.video_note:
+                bot.send_video_note(other_user, message.video_note.file_id)
+            elif message.sticker:
+                bot.send_sticker(other_user, message.sticker.file_id)
+            elif message.animation:
+                caption = message.caption if message.caption else ""
+                bot.send_animation(other_user, message.animation.file_id, caption=f"✨ گیف جدید:\n{caption}")
+                
+        except Exception as e:
+            logger.error(f"Error sending message: {str(e)}")
+            bot.reply_to(message, "❌ خطا در ارسال پیام! لطفاً دوباره تلاش کنید.")
+                
     except Exception as e:
         logger.error(f"Error in handle_messages: {str(e)}")
         bot.reply_to(message, "❌ خطایی رخ داد! لطفاً دوباره تلاش کنید.")
