@@ -28,66 +28,9 @@ bot = telebot.TeleBot(BOT_TOKEN)
 BASE_PATH = Path(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = BASE_PATH / 'user_database.db'
 
-# ذخیره اتصال‌ها
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections = {}
-        self.pending_connections = {}
-        self._logger = logging.getLogger(__name__)
-        
-    def add_pending(self, requester_id, owner_id):
-        self._logger.info(f"Adding pending connection: {requester_id} -> {owner_id}")
-        self.pending_connections[requester_id] = owner_id
-        self._logger.info(f"Current pending connections: {self.pending_connections}")
-        
-    def remove_pending(self, requester_id):
-        self._logger.info(f"Removing pending connection for: {requester_id}")
-        if requester_id in self.pending_connections:
-            del self.pending_connections[requester_id]
-            self._logger.info("Pending connection removed")
-        self._logger.info(f"Current pending connections: {self.pending_connections}")
-            
-    def get_pending_owner(self, requester_id):
-        return self.pending_connections.get(requester_id)
-        
-    def connect_users(self, user1_id, user2_id):
-        self._logger.info(f"Connecting users: {user1_id} <-> {user2_id}")
-        self.active_connections[user1_id] = user2_id
-        self.active_connections[user2_id] = user1_id
-        self._logger.info(f"Current active connections: {self.active_connections}")
-        
-    def disconnect_users(self, user_id):
-        self._logger.info(f"Disconnecting user: {user_id}")
-        if user_id in self.active_connections:
-            other_user = self.active_connections[user_id]
-            if other_user in self.active_connections:
-                del self.active_connections[other_user]
-            del self.active_connections[user_id]
-            self._logger.info(f"Users disconnected. Current active connections: {self.active_connections}")
-            return other_user
-        return None
-        
-    def get_connected_user(self, user_id):
-        return self.active_connections.get(user_id)
-        
-    def is_connected(self, user_id):
-        return user_id in self.active_connections
-        
-    def find_pending_request(self, owner_id):
-        self._logger.info(f"Finding pending request for owner: {owner_id}")
-        self._logger.info(f"Current pending connections: {self.pending_connections}")
-        for req_id, own_id in self.pending_connections.items():
-            if own_id == owner_id:
-                self._logger.info(f"Found pending request: {req_id}")
-                return req_id
-        self._logger.info("No pending request found")
-        return None
-
-    def get_all_pending(self):
-        return self.pending_connections.copy()
-
-# ایجاد نمونه از مدیریت اتصال
-connections = ConnectionManager()
+# Store active connections and pending requests
+active_connections = {}
+pending_connections = {}
 
 def ensure_directory_exists():
     try:
@@ -181,15 +124,15 @@ def handle_start(message):
                     return
                 
                 # بررسی اتصال فعلی
-                if connections.is_connected(message.from_user.id):
+                if message.from_user.id in active_connections:
                     bot.reply_to(message, "⚠️ شما در حال حاضر در یک چت هستید! ابتدا آن را قطع کنید.")
                     return
                     
-                if connections.is_connected(owner[0]):
+                if owner[0] in active_connections:
                     bot.reply_to(message, "⚠️ کاربر مورد نظر در حال حاضر در چت است!")
                     return
                     
-                connections.add_pending(message.from_user.id, owner[0])
+                pending_connections[message.from_user.id] = owner[0]
                 bot.send_message(
                     owner[0],
                     f"✨ درخواست چت جدید!\n\n👤 کاربر {message.from_user.username or 'ناشناس'} می‌خواهد با شما گفتگو کند.\n\n🤝 مایل به برقراری ارتباط هستید؟",
@@ -261,21 +204,19 @@ def handle_deep_linking(message):
             bot.reply_to(message, "❌ شما نمی‌توانید با خودتان چت کنید!")
             return
             
-        if connections.is_connected(requester_id):
+        if requester_id in active_connections:
             bot.reply_to(message, "⚠️ شما در حال حاضر در یک چت فعال هستید!")
             return
             
         # بررسی وجود درخواست قبلی
-        existing_request = connections.get_pending_owner(requester_id)
-        if existing_request:
-            logger.info(f"Found existing request for {requester_id} -> {existing_request}")
+        if requester_id in pending_connections:
+            logger.info(f"Found existing request for {requester_id} -> {pending_connections[requester_id]}")
             bot.reply_to(message, "⚠️ شما قبلاً یک درخواست ارسال کرده‌اید!")
             return
             
         # ذخیره درخواست
-        connections.add_pending(requester_id, target_id)
+        pending_connections[requester_id] = target_id
         logger.info(f"Added new pending request: {requester_id} -> {target_id}")
-        logger.info(f"Current pending connections: {connections.get_all_pending()}")
         
         # ارسال پیام به کاربر هدف
         keyboard = types.InlineKeyboardMarkup()
@@ -293,7 +234,7 @@ def handle_deep_linking(message):
             logger.info("Request message sent successfully")
         except Exception as e:
             logger.error(f"Error sending request message: {str(e)}")
-            connections.remove_pending(requester_id)
+            del pending_connections[requester_id]
             bot.reply_to(message, "❌ خطا در ارسال درخواست! لطفاً دوباره تلاش کنید.")
             
     except ValueError:
@@ -312,22 +253,23 @@ def handle_callback(call):
         
         if call.data == "accept_connection":
             logger.info("Processing accept_connection")
-            logger.info(f"All pending connections before processing: {connections.get_all_pending()}")
             
-            requester_id = connections.find_pending_request(user_id)
-            logger.info(f"Found requester_id: {requester_id}")
+            requester_id = None
+            for req_id, own_id in pending_connections.items():
+                if own_id == user_id:
+                    requester_id = req_id
+                    break
             
             if requester_id:
                 # اول پیام تایید رو به کاربر نشون بدیم
                 bot.answer_callback_query(call.id, "✅ درخواست پذیرفته شد")
                 
                 # حذف درخواست از لیست انتظار
-                connections.remove_pending(requester_id)
-                logger.info(f"Removed pending request. Current pending: {connections.get_all_pending()}")
+                del pending_connections[requester_id]
                 
                 # اتصال کاربران
-                connections.connect_users(user_id, requester_id)
-                logger.info(f"Connected users. Active connections: {connections.active_connections}")
+                active_connections[user_id] = requester_id
+                active_connections[requester_id] = user_id
                 
                 try:
                     # ارسال پیام به درخواست‌دهنده
@@ -362,7 +304,8 @@ def handle_callback(call):
                     
                 except Exception as e:
                     logger.error(f"Error sending confirmation messages: {str(e)}")
-                    connections.disconnect_users(user_id)  # در صورت خطا اتصال رو قطع می‌کنیم
+                    del active_connections[user_id]
+                    del active_connections[requester_id]  # در صورت خطا اتصال رو قطع می‌کنیم
                     bot.send_message(user_id, "❌ خطا در برقراری ارتباط! لطفاً دوباره تلاش کنید.")
             else:
                 logger.warning(f"No pending request found for user {user_id}")
@@ -371,10 +314,14 @@ def handle_callback(call):
                 
         elif call.data == "reject_connection":
             bot.answer_callback_query(call.id, "❌ درخواست رد شد")
-            requester_id = connections.find_pending_request(user_id)
+            requester_id = None
+            for req_id, own_id in pending_connections.items():
+                if own_id == user_id:
+                    requester_id = req_id
+                    break
             
             if requester_id:
-                connections.remove_pending(requester_id)
+                del pending_connections[requester_id]
                 bot.send_message(requester_id, "😔 متأسفانه درخواست چت شما پذیرفته نشد.\n\n✨ می‌توانید با کاربران دیگر گفتگو کنید!")
                 bot.edit_message_text(
                     "🚫 شما این درخواست چت را رد کردید.",
@@ -383,7 +330,7 @@ def handle_callback(call):
                 )
                 
         elif call.data == "disconnect":
-            other_user = connections.get_connected_user(user_id)
+            other_user = active_connections.get(user_id)
             if other_user:
                 try:
                     # حذف پین‌های قبلی
@@ -393,7 +340,8 @@ def handle_callback(call):
                     logger.error(f"Error unpinning messages: {str(e)}")
 
                 # قطع ارتباط
-                connections.disconnect_users(user_id)
+                del active_connections[user_id]
+                del active_connections[other_user]
                 
                 # ارسال پیام به هر دو کاربر
                 bot.send_message(user_id, """❌ چت پایان یافت!
@@ -417,7 +365,7 @@ def handle_callback(call):
 @bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'video_note', 'sticker', 'animation'])
 def handle_messages(message):
     user_id = message.from_user.id
-    other_user = connections.get_connected_user(user_id)
+    other_user = active_connections.get(user_id)
     
     if other_user:
         try:
