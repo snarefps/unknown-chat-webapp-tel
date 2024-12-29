@@ -10,15 +10,18 @@ import asyncio
 import logging
 import requests
 from pathlib import Path
+import time
 
 # تنظیمات اصلی
 BOT_TOKEN = os.getenv('BOT_TOKEN', '7359047596:AAFzCjMQM1YuovahhOqXB1BS9lijCxu29Ew')
 BOT_USERNAME = os.getenv('BOT_USERNAME', 'your_bot_username')
 DOMAIN = os.getenv('DOMAIN', 'https://your-domain.com')
 bot = telebot.TeleBot(BOT_TOKEN)
+
 # تنظیمات Flask
 app = Flask(__name__, template_folder='templates', static_folder='static')
-
+app.config['SECRET_KEY'] = os.urandom(24)
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 # تنظیمات Telegram bot
 
@@ -374,15 +377,7 @@ def webhook():
 
 # Start the Flask app
 if __name__ == "__main__":
-    # تنظیمات لاگینگ
-    logging.basicConfig(
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        level=logging.INFO,
-        handlers=[
-            logging.FileHandler(BASE_PATH / 'app.log'),
-            logging.StreamHandler()
-        ]
-    )
+    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
     logger = logging.getLogger(__name__)
     logger.info("Starting bot...")
     
@@ -391,11 +386,27 @@ if __name__ == "__main__":
     if conn and cursor:
         conn.close()
     
-if __name__ == "__main__":
-    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.DEBUG)
-    logger = logging.getLogger(__name__)
-    logger.debug("Starting bot...")
-    # Start both Flask and bot polling in separate threads
-    import threading
-    threading.Thread(target=bot.polling, daemon=True).start()
-    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
+    def run_flask():
+        app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    
+    def run_bot():
+        while True:
+            try:
+                logger.info("Starting bot polling...")
+                bot.polling(none_stop=True)
+            except Exception as e:
+                logger.error(f"Bot polling error: {e}")
+                continue
+    
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    
+    flask_thread.start()
+    bot_thread.start()
+    
+    try:
+        # Keep the main thread alive
+        while True:
+            time.sleep(60)
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
