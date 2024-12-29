@@ -7,7 +7,6 @@ import os
 import random
 import string
 from collections import defaultdict
-import asyncio
 import requests
 from pathlib import Path
 import time
@@ -75,6 +74,9 @@ def create_or_connect_database():
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
         return None, None
+    finally:
+        if conn:
+            conn.close()
 
 def generate_unique_link():
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
@@ -188,7 +190,8 @@ t.me/{bot.get_me().username}?start={special_link}
         print(f"خطا در هندلر شروع: {e}")
         bot.reply_to(message, "❌ متأسفانه مشکلی پیش آمده!\n\n🔄 لطفاً چند لحظه دیگر دوباره تلاش کنید.", reply_markup=create_web_app_button(message.from_user.id))
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
