@@ -11,6 +11,7 @@ import requests
 from pathlib import Path
 import time
 import threading
+import json
 
 # تنظیمات اصلی
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -45,70 +46,146 @@ class ChatState:
         self._connections = {}
         self._pending = {}
         self._lock = threading.Lock()
+        self._state_file = 'chat_state.json'
+        self._load_state()
+        
+    def _load_state(self):
+        try:
+            if os.path.exists(self._state_file):
+                with open(self._state_file, 'r') as f:
+                    data = json.load(f)
+                    self._connections = data.get('connections', {})
+                    self._pending = data.get('pending', {})
+                    logger.info("Chat state loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading chat state: {e}")
+            
+    def _save_state(self):
+        try:
+            with open(self._state_file, 'w') as f:
+                json.dump({
+                    'connections': self._connections,
+                    'pending': self._pending
+                }, f)
+            logger.debug("Chat state saved successfully")
+        except Exception as e:
+            logger.error(f"Error saving chat state: {e}")
         
     def add_pending(self, from_id, to_id):
         with self._lock:
-            if from_id not in self._connections and to_id not in self._connections:
-                self._pending[from_id] = {
-                    'to_id': to_id,
-                    'timestamp': time.time()
-                }
-                return True
-        return False
+            try:
+                if str(from_id) not in self._connections and str(to_id) not in self._connections:
+                    self._pending[str(from_id)] = {
+                        'to_id': str(to_id),
+                        'timestamp': time.time()
+                    }
+                    self._save_state()
+                    logger.info(f"Added pending connection: {from_id} -> {to_id}")
+                    return True
+                return False
+            except Exception as e:
+                logger.error(f"Error in add_pending: {e}")
+                return False
         
     def accept_chat(self, from_id, to_id):
         with self._lock:
-            if from_id in self._pending and self._pending[from_id]['to_id'] == to_id:
-                self._connections[from_id] = {
-                    'partner': to_id,
-                    'timestamp': time.time(),
-                    'active': True
-                }
-                self._connections[to_id] = {
-                    'partner': from_id,
-                    'timestamp': time.time(),
-                    'active': True
-                }
-                del self._pending[from_id]
-                return True
-        return False
+            try:
+                from_id, to_id = str(from_id), str(to_id)
+                if from_id in self._pending and self._pending[from_id]['to_id'] == to_id:
+                    current_time = time.time()
+                    self._connections[from_id] = {
+                        'partner': to_id,
+                        'timestamp': current_time,
+                        'active': True,
+                        'messages_count': 0
+                    }
+                    self._connections[to_id] = {
+                        'partner': from_id,
+                        'timestamp': current_time,
+                        'active': True,
+                        'messages_count': 0
+                    }
+                    del self._pending[from_id]
+                    self._save_state()
+                    logger.info(f"Chat accepted: {from_id} <-> {to_id}")
+                    return True
+                return False
+            except Exception as e:
+                logger.error(f"Error in accept_chat: {e}")
+                return False
         
     def end_chat(self, user_id):
         with self._lock:
-            if user_id in self._connections:
-                partner_id = self._connections[user_id]['partner']
-                if partner_id in self._connections:
-                    del self._connections[partner_id]
-                del self._connections[user_id]
-                return partner_id
-        return None
+            try:
+                user_id = str(user_id)
+                if user_id in self._connections:
+                    partner_id = self._connections[user_id]['partner']
+                    if partner_id in self._connections:
+                        del self._connections[partner_id]
+                    del self._connections[user_id]
+                    self._save_state()
+                    logger.info(f"Chat ended: {user_id} <-> {partner_id}")
+                    return partner_id
+                return None
+            except Exception as e:
+                logger.error(f"Error in end_chat: {e}")
+                return None
         
     def get_partner(self, user_id):
         with self._lock:
-            if user_id in self._connections and self._connections[user_id]['active']:
-                partner = self._connections[user_id]['partner']
-                self._connections[user_id]['timestamp'] = time.time()
-                if partner in self._connections:
-                    self._connections[partner]['timestamp'] = time.time()
-                return partner
-        return None
+            try:
+                user_id = str(user_id)
+                if user_id in self._connections and self._connections[user_id]['active']:
+                    conn = self._connections[user_id]
+                    partner = conn['partner']
+                    
+                    # بروزرسانی timestamp و شمارنده پیام‌ها
+                    current_time = time.time()
+                    conn['timestamp'] = current_time
+                    conn['messages_count'] = conn.get('messages_count', 0) + 1
+                    
+                    if partner in self._connections:
+                        self._connections[partner]['timestamp'] = current_time
+                        self._connections[partner]['messages_count'] = self._connections[partner].get('messages_count', 0)
+                        
+                    self._save_state()
+                    return partner
+                return None
+            except Exception as e:
+                logger.error(f"Error in get_partner: {e}")
+                return None
         
     def is_connected(self, user_id):
         with self._lock:
-            return user_id in self._connections and self._connections[user_id]['active']
+            try:
+                user_id = str(user_id)
+                return (user_id in self._connections and 
+                        self._connections[user_id]['active'] and 
+                        self._connections[user_id]['partner'] in self._connections)
+            except Exception as e:
+                logger.error(f"Error in is_connected: {e}")
+                return False
             
     def cleanup_old_connections(self):
-        current_time = time.time()
-        with self._lock:
-            # پاکسازی درخواست‌های قدیمی (بعد از 5 دقیقه)
-            for user_id in list(self._pending.keys()):
-                if current_time - self._pending[user_id]['timestamp'] > 300:
-                    del self._pending[user_id]
-            
-            # پاکسازی چت‌های غیرفعال (بعد از 30 دقیقه)
-            for user_id in list(self._connections.keys()):
-                if current_time - self._connections[user_id]['timestamp'] > 1800:
-                    self.end_chat(user_id)
+        try:
+            current_time = time.time()
+            with self._lock:
+                # پاکسازی درخواست‌های قدیمی (بعد از 5 دقیقه)
+                for user_id in list(self._pending.keys()):
+                    if current_time - self._pending[user_id]['timestamp'] > 300:
+                        del self._pending[user_id]
+                        logger.info(f"Cleaned up pending request for user {user_id}")
+                
+                # پاکسازی چت‌های غیرفعال (بعد از 30 دقیقه)
+                for user_id in list(self._connections.keys()):
+                    if current_time - self._connections[user_id]['timestamp'] > 1800:
+                        partner_id = self.end_chat(user_id)
+                        if partner_id:
+                            logger.info(f"Cleaned up inactive chat: {user_id} <-> {partner_id}")
+                
+                self._save_state()
+        except Exception as e:
+            logger.error(f"Error in cleanup_old_connections: {e}")
 
 chat_state = ChatState()
 
@@ -294,7 +371,7 @@ def handle_messages(message):
                 logger.debug(f"Forwarding message from {user_id} to {partner_id}")
                 try:
                     if message.content_type == 'text':
-                        bot.send_message(partner_id, message.text)
+                        bot.send_message(int(partner_id), message.text)
                     elif message.content_type in ['photo', 'video', 'document', 'audio', 'voice', 'sticker']:
                         file_id = None
                         if message.content_type == 'photo':
@@ -303,9 +380,11 @@ def handle_messages(message):
                             file_id = getattr(message, message.content_type).file_id
                         
                         if message.caption:
-                            getattr(bot, f'send_{message.content_type}')(partner_id, file_id, caption=message.caption)
+                            getattr(bot, f'send_{message.content_type}')(int(partner_id), file_id, caption=message.caption)
                         else:
-                            getattr(bot, f'send_{message.content_type}')(partner_id, file_id)
+                            getattr(bot, f'send_{message.content_type}')(int(partner_id), file_id)
+                    
+                    logger.info(f"Message forwarded successfully from {user_id} to {partner_id}")
                             
                 except Exception as e:
                     logger.error(f"Error sending message: {e}", exc_info=True)
