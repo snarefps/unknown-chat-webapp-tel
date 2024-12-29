@@ -10,11 +10,13 @@ import asyncio
 import logging
 import requests
 from pathlib import Path
+import time
+import json
 
 # تنظیمات اصلی
-BOT_TOKEN = '7743246613:AAFQPgQOQqRpCG3HtD7Ly-o8VAm-P6O0cEM'
-BOT_USERNAME = 'aecvfaecvasbot'
-DOMAIN = 'https://ideal-pangolin-solely.ngrok-free.app'
+BOT_TOKEN = '7359047596:AAFzCjMQM1YuovahhOqXB1BS9lijCxu29Ew'
+BOT_USERNAME = 'your_bot_username'
+DOMAIN = 'https://your-domain.com'
 
 # تنظیمات Flask
 app = Flask(__name__, template_folder='templates', static_folder='static')
@@ -508,10 +510,11 @@ if __name__ == "__main__":
     try:
         # حذف webhook قبلی
         bot.remove_webhook()
+        time.sleep(1)  # صبر کن تا webhook قبلی کاملاً حذف شود
         
         # تنظیم webhook جدید
         webhook_url = f"{DOMAIN}/webhook"
-        bot.set_webhook(url=webhook_url, drop_pending_updates=True)
+        bot.set_webhook(url=webhook_url)
         logger.info(f"Webhook set to: {webhook_url}")
         
         # اجرای سرور
@@ -523,4 +526,5 @@ if __name__ == "__main__":
         )
     except Exception as e:
         logger.error(f"Error starting bot: {e}")
+        bot.remove_webhook()  # در صورت خطا، webhook را پاک کن
         raise
