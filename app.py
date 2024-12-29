@@ -246,82 +246,55 @@ def handle_deep_linking(message):
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
-    logger = logging.getLogger(__name__)
     try:
         user_id = call.from_user.id
-        logger.info(f"Received callback from user {user_id}: {call.data}")
         
         if call.data == "accept_connection":
-            logger.info("Processing accept_connection")
-            
             requester_id = None
             for req_id, own_id in pending_connections.items():
                 if own_id == user_id:
                     requester_id = req_id
+                    active_connections[own_id] = {'connected_to': req_id}
+                    active_connections[req_id] = {'connected_to': own_id}
+                    del pending_connections[req_id]
                     break
-            
+                
             if requester_id:
-                # اول پیام تایید رو به کاربر نشون بدیم
-                bot.answer_callback_query(call.id, "✅ درخواست پذیرفته شد")
-                
-                # حذف درخواست از لیست انتظار
-                del pending_connections[requester_id]
-                
-                # اتصال کاربران
-                active_connections[user_id] = requester_id
-                active_connections[requester_id] = user_id
-                
-                try:
-                    # ارسال پیام به درخواست‌دهنده
-                    requester_message = bot.send_message(
-                        requester_id,
-                        """✨ درخواست چت شما پذیرفته شد!
+                disconnect_message = bot.send_message(
+                    requester_id,
+                    """✨ درخواست چت شما پذیرفته شد!
 
 💭 حالا می‌توانید پیام‌های خود را ارسال کنید.
 
 ❤️ امیدواریم گفتگوی خوبی داشته باشید!
 
 ⚠️ برای قطع ارتباط از دکمه زیر استفاده کنید:""",
-                        reply_markup=create_disconnect_button()
-                    )
-                    bot.pin_chat_message(requester_id, requester_message.message_id)
-                    
-                    # ارسال پیام به پذیرنده
-                    owner_message = bot.send_message(
-                        user_id,
-                        """🤝 شما درخواست چت را پذیرفتید!
+                    reply_markup=create_disconnect_button()
+                )
+                bot.pin_chat_message(requester_id, disconnect_message.message_id)
+                
+                owner_disconnect_message = bot.send_message(
+                    user_id,
+                    """🤝 شما درخواست چت را پذیرفتید!
 
 💭 حالا می‌توانید پیام‌های خود را ارسال کنید.
 
 ❤️ امیدواریم گفتگوی خوبی داشته باشید!
 
 ⚠️ برای قطع ارتباط از دکمه زیر استفاده کنید:""",
-                        reply_markup=create_disconnect_button()
-                    )
-                    bot.pin_chat_message(user_id, owner_message.message_id)
-                    
-                    logger.info(f"Connection established between {user_id} and {requester_id}")
-                    
-                except Exception as e:
-                    logger.error(f"Error sending confirmation messages: {str(e)}")
-                    del active_connections[user_id]
-                    del active_connections[requester_id]  # در صورت خطا اتصال رو قطع می‌کنیم
-                    bot.send_message(user_id, "❌ خطا در برقراری ارتباط! لطفاً دوباره تلاش کنید.")
-            else:
-                logger.warning(f"No pending request found for user {user_id}")
-                bot.answer_callback_query(call.id, "❌ درخواستی یافت نشد")
-                bot.send_message(user_id, "⚠️ درخواستی برای پذیرش یافت نشد!")
+                    reply_markup=create_disconnect_button()
+                )
+                bot.pin_chat_message(user_id, owner_disconnect_message.message_id)
                 
         elif call.data == "reject_connection":
-            bot.answer_callback_query(call.id, "❌ درخواست رد شد")
             requester_id = None
             for req_id, own_id in pending_connections.items():
                 if own_id == user_id:
                     requester_id = req_id
+                    del pending_connections[req_id]
                     break
             
             if requester_id:
-                del pending_connections[requester_id]
                 bot.send_message(requester_id, "😔 متأسفانه درخواست چت شما پذیرفته نشد.\n\n✨ می‌توانید با کاربران دیگر گفتگو کنید!")
                 bot.edit_message_text(
                     "🚫 شما این درخواست چت را رد کردید.",
@@ -330,92 +303,89 @@ def handle_callback(call):
                 )
                 
         elif call.data == "disconnect":
-            other_user = active_connections.get(user_id)
-            if other_user:
-                try:
-                    # حذف پین‌های قبلی
-                    bot.unpin_all_chat_messages(user_id)
-                    bot.unpin_all_chat_messages(other_user)
-                except Exception as e:
-                    logger.error(f"Error unpinning messages: {str(e)}")
+            if user_id in active_connections:
+                other_user = active_connections[user_id].get('connected_to')
+                if other_user:
+                    try:
+                        bot.unpin_all_chat_messages(user_id)
+                        bot.unpin_all_chat_messages(other_user)
+                    except:
+                        pass
 
-                # قطع ارتباط
-                del active_connections[user_id]
-                del active_connections[other_user]
-                
-                # ارسال پیام به هر دو کاربر
-                bot.send_message(user_id, """❌ چت پایان یافت!
+                    bot.send_message(user_id, """❌ چت پایان یافت!
 
 🌟 امیدواریم از این گفتگو لذت برده باشید.
 ✨ می‌توانید دوباره با کاربران دیگر چت کنید!""")
-                
-                bot.send_message(other_user, """❌ کاربر مقابل چت را پایان داد.
+                    bot.send_message(other_user, """❌ کاربر مقابل چت را پایان داد.
 
 🌟 امیدواریم از این گفتگو لذت برده باشید.
 ✨ می‌توانید دوباره با کاربران دیگر چت کنید!""")
-                
-                logger.info(f"Disconnected users {user_id} and {other_user}")
-            else:
-                bot.answer_callback_query(call.id, "⚠️ شما به کسی متصل نیستید")
-                
+                    
+                    del active_connections[user_id]
+                    del active_connections[other_user]
+                    
     except Exception as e:
-        logger.error(f"Error in callback handler: {str(e)}")
+        print(f"خطا در هندلر کال‌بک: {e}")
         bot.answer_callback_query(call.id, "❌ متأسفانه مشکلی پیش آمده! لطفاً دوباره تلاش کنید.")
 
 @bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'video_note', 'sticker', 'animation'])
 def handle_messages(message):
-    user_id = message.from_user.id
-    other_user = active_connections.get(user_id)
-    
-    if other_user:
-        try:
-            # ارسال متن
-            if message.text:
-                bot.send_message(other_user, f"💬 پیام جدید:\n{message.text}")
-            
-            # ارسال عکس
-            elif message.photo:
-                caption = message.caption if message.caption else ""
-                bot.send_photo(other_user, message.photo[-1].file_id, caption=f"🖼️ تصویر جدید:\n{caption}")
-            
-            # ارسال ویدیو
-            elif message.video:
-                caption = message.caption if message.caption else ""
-                bot.send_video(other_user, message.video.file_id, caption=f"🎥 ویدیو جدید:\n{caption}")
-            
-            # ارسال فایل
-            elif message.document:
-                caption = message.caption if message.caption else ""
-                bot.send_document(other_user, message.document.file_id, caption=f"📎 فایل جدید:\n{caption}")
-            
-            # ارسال صوت
-            elif message.audio:
-                caption = message.caption if message.caption else ""
-                bot.send_audio(other_user, message.audio.file_id, caption=f"🎵 موزیک جدید:\n{caption}")
-            
-            # ارسال ویس
-            elif message.voice:
-                caption = message.caption if message.caption else ""
-                bot.send_voice(other_user, message.voice.file_id, caption=f"🎤 پیام صوتی جدید:\n{caption}")
-            
-            # ارسال ویدیو نوت
-            elif message.video_note:
-                bot.send_video_note(other_user, message.video_note.file_id)
-            
-            # ارسال استیکر
-            elif message.sticker:
-                bot.send_sticker(other_user, message.sticker.file_id)
-            
-            # ارسال گیف
-            elif message.animation:
-                caption = message.caption if message.caption else ""
-                bot.send_animation(other_user, message.animation.file_id, caption=f"✨ گیف جدید:\n{caption}")
-            
-        except Exception as e:
-            print(f"خطا در ارسال پیام: {e}")
-            bot.send_message(message.chat.id, "❌ خطا در ارسال پیام! لطفاً دوباره تلاش کنید.")
+    if message.from_user.id in active_connections:
+        other_user = active_connections[message.from_user.id].get('connected_to')
+        if other_user:
+            try:
+                # ارسال متن
+                if message.text:
+                    bot.send_message(other_user, f"💬 پیام جدید:\n{message.text}")
+                
+                # ارسال عکس
+                elif message.photo:
+                    caption = message.caption if message.caption else ""
+                    bot.send_photo(other_user, message.photo[-1].file_id, caption=f"🖼️ تصویر جدید:\n{caption}")
+                
+                # ارسال ویدیو
+                elif message.video:
+                    caption = message.caption if message.caption else ""
+                    bot.send_video(other_user, message.video.file_id, caption=f"🎥 ویدیو جدید:\n{caption}")
+                
+                # ارسال فایل
+                elif message.document:
+                    caption = message.caption if message.caption else ""
+                    bot.send_document(other_user, message.document.file_id, caption=f"📎 فایل جدید:\n{caption}")
+                
+                # ارسال صوت
+                elif message.audio:
+                    caption = message.caption if message.caption else ""
+                    bot.send_audio(other_user, message.audio.file_id, caption=f"🎵 موزیک جدید:\n{caption}")
+                
+                # ارسال ویس
+                elif message.voice:
+                    caption = message.caption if message.caption else ""
+                    bot.send_voice(other_user, message.voice.file_id, caption=f"🎤 پیام صوتی جدید:\n{caption}")
+                
+                # ارسال ویدیو نوت
+                elif message.video_note:
+                    bot.send_video_note(other_user, message.video_note.file_id)
+                
+                # ارسال استیکر
+                elif message.sticker:
+                    bot.send_sticker(other_user, message.sticker.file_id)
+                
+                # ارسال گیف
+                elif message.animation:
+                    caption = message.caption if message.caption else ""
+                    bot.send_animation(other_user, message.animation.file_id, caption=f"✨ گیف جدید:\n{caption}")
+                
+            except Exception as e:
+                print(f"خطا در ارسال پیام: {e}")
+                bot.send_message(message.chat.id, "❌ خطا در ارسال پیام! لطفاً دوباره تلاش کنید.")
     else:
-        bot.reply_to(message, "⚠️ شما به کسی متصل نیستید. برای اتصال به یک کاربر، از دکمه‌های موجود استفاده کنید.")
+        bot.reply_to(message, """📝 برای شروع چت:
+
+1️⃣ لینک اختصاصی خود را با دوستانتان به اشتراک بگذارید
+2️⃣ یا از لینک دوستانتان استفاده کنید
+
+✨ همین حالا چت را شروع کنید!""")
 
 # Flask route to display user data
 @app.route('/')
