@@ -11,10 +11,11 @@ import logging
 import requests
 from pathlib import Path
 import time
+import threading
 
 # تنظیمات اصلی
-BOT_TOKEN = os.getenv('BOT_TOKEN', '7359047596:AAFzCjMQM1YuovahhOqXB1BS9lijCxu29Ew')
-BOT_USERNAME = os.getenv('BOT_USERNAME', 'your_bot_username')
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+BOT_USERNAME = os.getenv('BOT_USERNAME')
 DOMAIN = os.getenv('DOMAIN', 'https://your-domain.com')
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -23,12 +24,9 @@ app = Flask(__name__, template_folder='templates', static_folder='static')
 app.config['SECRET_KEY'] = os.urandom(24)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
-# تنظیمات Telegram bot
-
-
 # تنظیمات مسیرها و دیتابیس
-BASE_PATH = Path(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = BASE_PATH / 'user_database.db'
+BASE_PATH = '/opt/telegram-webapp'
+DB_PATH = os.path.join(BASE_PATH, 'user_database.db')
 
 # Store active connections and pending requests
 active_connections = defaultdict(dict)
@@ -85,7 +83,7 @@ def create_disconnect_button():
     return keyboard
 
 def create_web_app_button(user_id):
-    web_app_info = types.WebAppInfo(url=f"{DOMAIN}/users?telegram_user_id={user_id}")
+    web_app_info = types.WebAppInfo(url=f"https://ideal-pangolin-solely.ngrok-free.app/users?telegram_user_id={user_id}")
     markup = types.InlineKeyboardMarkup()
     web_app_btn = types.InlineKeyboardButton("باز کردن وب اپلیکیشن", web_app=web_app_info)
     markup.add(web_app_btn)
@@ -381,10 +379,8 @@ if __name__ == "__main__":
     logger = logging.getLogger(__name__)
     logger.info("Starting bot...")
     
-    # اطمینان از وجود دیتابیس
-    conn, cursor = create_or_connect_database()
-    if conn and cursor:
-        conn.close()
+    # اطمینان از وجود دایرکتوری‌ها
+    ensure_directory_exists()
     
     def run_flask():
         app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
@@ -405,7 +401,7 @@ if __name__ == "__main__":
     bot_thread.start()
     
     try:
-        # Keep the main thread alive
+        # نگه داشتن برنامه در حال اجرا
         while True:
             time.sleep(60)
     except KeyboardInterrupt:
