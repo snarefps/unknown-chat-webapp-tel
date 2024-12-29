@@ -10,13 +10,11 @@ import asyncio
 import logging
 import requests
 from pathlib import Path
-import time
-import json
 
 # تنظیمات اصلی
-BOT_TOKEN = '7359047596:AAFzCjMQM1YuovahhOqXB1BS9lijCxu29Ew'
-BOT_USERNAME = 'your_bot_username'
-DOMAIN = 'https://your-domain.com'
+BOT_TOKEN = os.getenv('BOT_TOKEN', '7359047596:AAFzCjMQM1YuovahhOqXB1BS9lijCxu29Ew')
+BOT_USERNAME = os.getenv('BOT_USERNAME', 'your_bot_username')
+DOMAIN = os.getenv('DOMAIN', 'https://your-domain.com')
 
 # تنظیمات Flask
 app = Flask(__name__, template_folder='templates', static_folder='static')
@@ -24,7 +22,7 @@ app.config['SECRET_KEY'] = os.urandom(24)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
 # تنظیمات Telegram bot
-bot = telebot.TeleBot(BOT_TOKEN, threaded=True, parse_mode='HTML')
+bot = telebot.TeleBot(BOT_TOKEN)
 
 # تنظیمات مسیرها و دیتابیس
 BASE_PATH = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -171,9 +169,8 @@ def handle_start(message):
             return
 
         # پردازش پارامتر start
-        start_args = message.text.split()
-        if len(start_args) > 1:
-            special_link = start_args[1]
+        if len(message.text.split()) > 1:
+            special_link = message.text.split()[1]
             cursor.execute("SELECT telegram_user_id FROM users WHERE special_link = ?", (special_link,))
             owner = cursor.fetchone()
             
@@ -333,103 +330,106 @@ def handle_callback(call):
                 logger.info(f"Connected users. Active connections: {connections.active_connections}")
                 
                 try:
-                    # پیام و دکمه برای درخواست‌دهنده
-                    disconnect_msg = bot.send_message(
+                    # ارسال پیام به درخواست‌دهنده
+                    bot.send_message(
                         requester_id,
-                        "✨ درخواست چت شما پذیرفته شد!\n\n💭 حالا می‌توانید پیام‌های خود را ارسال کنید.\n\n⚠️ برای قطع ارتباط از دکمه زیر استفاده کنید:",
+                        "✨ درخواست چت شما پذیرفته شد!\n\n💭 حالا می‌توانید پیام‌های خود را ارسال کنید.",
                         reply_markup=create_disconnect_button()
                     )
-                    bot.pin_chat_message(requester_id, disconnect_msg.message_id)
                     
-                    # پیام و دکمه برای پذیرنده
-                    disconnect_msg = bot.send_message(
+                    # ارسال پیام به پذیرنده
+                    bot.send_message(
                         user_id,
-                        "🤝 شما درخواست چت را پذیرفتید!\n\n💭 حالا می‌توانید پیام‌های خود را ارسال کنید.\n\n⚠️ برای قطع ارتباط از دکمه زیر استفاده کنید:",
+                        "🤝 شما درخواست چت را پذیرفتید!\n\n💭 حالا می‌توانید پیام‌های خود را ارسال کنید.",
                         reply_markup=create_disconnect_button()
                     )
-                    bot.pin_chat_message(user_id, disconnect_msg.message_id)
                     
-                    logger.info("Successfully sent confirmation messages to both users")
+                    logger.info(f"Connection established between {user_id} and {requester_id}")
                     
                 except Exception as e:
                     logger.error(f"Error sending confirmation messages: {str(e)}")
-                    bot.answer_callback_query(call.id, "❌ خطا در برقراری ارتباط!")
-                    connections.disconnect_users(user_id)
+                    connections.disconnect_users(user_id)  # در صورت خطا اتصال رو قطع می‌کنیم
+                    bot.send_message(user_id, "❌ خطا در برقراری ارتباط! لطفاً دوباره تلاش کنید.")
             else:
-                bot.answer_callback_query(call.id, "⚠️ درخواست چت معتبر نیست!")
+                logger.warning(f"No pending request found for user {user_id}")
+                bot.answer_callback_query(call.id, "❌ درخواستی یافت نشد")
+                bot.send_message(user_id, "⚠️ درخواستی برای پذیرش یافت نشد!")
                 
         elif call.data == "reject_connection":
-            requester_id = connections.find_pending_request(user_id)
+            bot.answer_callback_query(call.id, "❌ درخواست رد شد")
+            requester_id = connections.get_pending_owner(user_id)
+            
             if requester_id:
                 connections.remove_pending(requester_id)
-                bot.answer_callback_query(call.id, "❌ درخواست رد شد")
-                bot.send_message(requester_id, "❌ متأسفانه درخواست چت شما رد شد.")
-                bot.send_message(user_id, "✅ درخواست چت با موفقیت رد شد.")
-            else:
-                bot.answer_callback_query(call.id, "⚠️ درخواست چت معتبر نیست!")
+                bot.send_message(requester_id, "😔 متأسفانه درخواست چت شما پذیرفته نشد.\n\n✨ می‌توانید با کاربران دیگر گفتگو کنید!")
+                bot.edit_message_text(
+                    "🚫 شما این درخواست چت را رد کردید.",
+                    call.message.chat.id,
+                    call.message.message_id
+                )
                 
         elif call.data == "disconnect":
+            bot.answer_callback_query(call.id, "❌ قطع ارتباط")
             other_user = connections.disconnect_users(user_id)
+            
             if other_user:
-                bot.answer_callback_query(call.id, "✅ ارتباط قطع شد")
-                bot.send_message(user_id, "✅ ارتباط با موفقیت قطع شد.")
-                bot.send_message(other_user, "⚠️ کاربر مقابل ارتباط را قطع کرد.")
-            else:
-                bot.answer_callback_query(call.id, "⚠️ شما در چت نیستید!")
+                bot.send_message(user_id, "❌ چت پایان یافت!\n\n🌟 امیدواریم از این گفتگو لذت برده باشید.\n✨ می‌توانید دوباره با کاربران دیگر چت کنید!")
+                bot.send_message(other_user, "❌ کاربر مقابل چت را پایان داد.\n\n🌟 امیدواریم از این گفتگو لذت برده باشید.\n✨ می‌توانید دوباره با کاربران دیگر چت کنید!")
                 
     except Exception as e:
         logger.error(f"Error in callback handler: {str(e)}")
-        bot.answer_callback_query(call.id, "❌ خطایی رخ داد! لطفاً دوباره تلاش کنید.")
+        bot.answer_callback_query(call.id, "❌ متأسفانه مشکلی پیش آمده! لطفاً دوباره تلاش کنید.")
 
 @bot.message_handler(func=lambda message: True, content_types=['text', 'photo', 'video', 'document', 'audio', 'voice', 'video_note', 'sticker', 'animation'])
 def handle_messages(message):
     logger = logging.getLogger(__name__)
     user_id = message.from_user.id
     
-    # اگر پیام /start باشد، پردازش نکن
-    if message.text and message.text.startswith('/'):
-        return
-        
     try:
         # بررسی اتصال کاربر
         other_user = connections.get_connected_user(user_id)
         
-        if not other_user:
-            bot.reply_to(message, "⚠️ شما در حال حاضر با کسی در ارتباط نیستید!")
-            return
+        if other_user:
+            logger.info(f"Sending message from {user_id} to {other_user}")
             
-        logger.info(f"Sending message from {user_id} to {other_user}")
+            try:
+                if message.text:
+                    bot.send_message(other_user, f"💬 پیام جدید:\n{message.text}")
+                elif message.photo:
+                    caption = message.caption if message.caption else ""
+                    bot.send_photo(other_user, message.photo[-1].file_id, caption=f"🖼️ تصویر جدید:\n{caption}")
+                elif message.video:
+                    caption = message.caption if message.caption else ""
+                    bot.send_video(other_user, message.video.file_id, caption=f"🎥 ویدیو جدید:\n{caption}")
+                elif message.document:
+                    caption = message.caption if message.caption else ""
+                    bot.send_document(other_user, message.document.file_id, caption=f"📎 فایل جدید:\n{caption}")
+                elif message.audio:
+                    caption = message.caption if message.caption else ""
+                    bot.send_audio(other_user, message.audio.file_id, caption=f"🎵 موزیک جدید:\n{caption}")
+                elif message.voice:
+                    caption = message.caption if message.caption else ""
+                    bot.send_voice(other_user, message.voice.file_id, caption=f"🎤 پیام صوتی جدید:\n{caption}")
+                elif message.video_note:
+                    bot.send_video_note(other_user, message.video_note.file_id)
+                elif message.sticker:
+                    bot.send_sticker(other_user, message.sticker.file_id)
+                elif message.animation:
+                    caption = message.caption if message.caption else ""
+                    bot.send_animation(other_user, message.animation.file_id, caption=f"✨ گیف جدید:\n{caption}")
+                
+            except Exception as e:
+                logger.error(f"Error sending message: {str(e)}")
+                bot.reply_to(message, "❌ خطا در ارسال پیام! لطفاً دوباره تلاش کنید.")
+                
+        else:
+            bot.reply_to(message, """📝 برای شروع چت:
+
+1️⃣ لینک اختصاصی خود را با دوستانتان به اشتراک بگذارید
+2️⃣ یا از لینک دوستانتان استفاده کنید
+
+✨ همین حالا چت را شروع کنید!""")
             
-        try:
-            if message.text:
-                bot.send_message(other_user, f"💬 پیام جدید:\n{message.text}")
-            elif message.photo:
-                caption = message.caption if message.caption else ""
-                bot.send_photo(other_user, message.photo[-1].file_id, caption=f"🖼️ تصویر جدید:\n{caption}")
-            elif message.video:
-                caption = message.caption if message.caption else ""
-                bot.send_video(other_user, message.video.file_id, caption=f"🎥 ویدیو جدید:\n{caption}")
-            elif message.document:
-                caption = message.caption if message.caption else ""
-                bot.send_document(other_user, message.document.file_id, caption=f"📎 فایل جدید:\n{caption}")
-            elif message.audio:
-                caption = message.caption if message.caption else ""
-                bot.send_audio(other_user, message.audio.file_id, caption=f"🎵 موزیک جدید:\n{caption}")
-            elif message.voice:
-                caption = message.caption if message.caption else ""
-                bot.send_voice(other_user, message.voice.file_id, caption=f"🎤 پیام صوتی جدید:\n{caption}")
-            elif message.video_note:
-                bot.send_video_note(other_user, message.video_note.file_id)
-            elif message.sticker:
-                bot.send_sticker(other_user, message.sticker.file_id)
-            elif message.animation:
-                caption = message.caption if message.caption else ""
-                bot.send_animation(other_user, message.animation.file_id, caption=f"✨ گیف جدید:\n{caption}")
-                
-        except Exception as e:
-            logger.error(f"Error sending message: {str(e)}")
-            bot.reply_to(message, "❌ خطا در ارسال پیام! لطفاً دوباره تلاش کنید.")
-                
     except Exception as e:
         logger.error(f"Error in handle_messages: {str(e)}")
         bot.reply_to(message, "❌ خطایی رخ داد! لطفاً دوباره تلاش کنید.")
@@ -507,24 +507,10 @@ if __name__ == "__main__":
     if conn and cursor:
         conn.close()
     
-    try:
-        # حذف webhook قبلی
-        bot.remove_webhook()
-        time.sleep(1)  # صبر کن تا webhook قبلی کاملاً حذف شود
-        
-        # تنظیم webhook جدید
-        webhook_url = f"{DOMAIN}/webhook"
-        bot.set_webhook(url=webhook_url)
-        logger.info(f"Webhook set to: {webhook_url}")
-        
-        # اجرای سرور
-        app.run(
-            host='0.0.0.0',
-            port=int(os.getenv('PORT', 5000)),
-            debug=False,
-            threaded=True
-        )
-    except Exception as e:
-        logger.error(f"Error starting bot: {e}")
-        bot.remove_webhook()  # در صورت خطا، webhook را پاک کن
-        raise
+    # اجرای سرور
+    app.run(
+        host='0.0.0.0',
+        port=int(os.getenv('PORT', 5000)),
+        debug=False,
+        threaded=True
+    )
